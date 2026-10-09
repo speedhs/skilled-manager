@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2/test"
-	"github.com/user/skills-manager/internal/core"
+	"github.com/skilled-manager/skills-manager/pkg/core"
 )
 
 func setupTestManager(t *testing.T) (*core.Manager, string) {

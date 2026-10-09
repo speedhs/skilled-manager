@@ -3,7 +3,7 @@ package ui
 import (
 	"image/color"
 
-	"github.com/user/skills-manager/internal/core"
+	"github.com/skilled-manager/skills-manager/pkg/core"
 )
 
 var (

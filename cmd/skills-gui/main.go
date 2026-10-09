@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/user/skills-manager/internal/core"
-	"github.com/user/skills-manager/internal/ui"
+	"github.com/skilled-manager/skills-manager/internal/ui"
+	"github.com/skilled-manager/skills-manager/pkg/core"
 )
 
 func main() {

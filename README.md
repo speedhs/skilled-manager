@@ -2,15 +2,24 @@
 
 **Skills Manager** is a cross-platform native desktop application and CLI written in Go using [Fyne](https://fyne.io/) (v2.5+) that organizes and manages AI agent "skills" (`SKILL.md` folders) from a single canonical store and exposes them to multiple AI tools: **Claude Code**, **Codex CLI**, **OpenCode**, and **Gemini CLI**.
 
+The core engine is located in [`pkg/core`](./pkg/core) as a clean, standalone, pure Go library with zero GUI dependencies, ready to be imported into any Go application or agent runtime.
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/skilled-manager/skills-manager/pkg/core.svg)](https://pkg.go.dev/github.com/skilled-manager/skills-manager/pkg/core)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ---
 
 ## 📑 Table of Contents
+- [Installation](#installation)
+  - [Install CLI via Go](#install-cli-via-go)
+  - [Download Pre-Built Binaries](#download-pre-built-binaries)
+  - [Install Desktop GUI](#install-desktop-gui)
+  - [Build from Source](#build-from-source)
+- [Using as a Go Library (`pkg/core`)](#using-as-a-go-library-pkgcore)
 - [Architecture Overview](#architecture-overview)
 - [Core Model & Storage](#core-model--storage)
 - [Tool Target Matrix](#tool-target-matrix)
 - [Features](#features)
-- [Prerequisites & System Requirements](#prerequisites--system-requirements)
-- [Quickstart & Build Steps](#quickstart--build-steps)
 - [CLI Usage](#cli-usage)
 - [GUI Walkthrough](#gui-walkthrough)
 - [Safety & Collision Guarantees](#safety--collision-guarantees)
@@ -19,34 +28,172 @@
 
 ---
 
+## Installation
+
+### Install CLI via Go
+
+You can install the `skills` CLI directly using `go install`. The CLI builds completely statically without CGO (`CGO_ENABLED=0`):
+
+```bash
+CGO_ENABLED=0 go install github.com/skilled-manager/skills-manager/cmd/skills@latest
+```
+
+Verify the installation:
+```bash
+skills list
+```
+
+### Download Pre-Built Binaries
+
+Pre-compiled static binaries for macOS, Linux, Windows, and FreeBSD are published with every release:
+
+1. Visit the [Releases](https://github.com/skilled-manager/skills-manager/releases) page.
+2. Download the archive for your operating system and architecture:
+   - Linux: `skills-manager-cli_<version>_linux_amd64.tar.gz` (or `arm64`)
+   - macOS: `skills-manager-cli_<version>_darwin_all.tar.gz`
+   - Windows: `skills-manager-cli_<version>_windows_amd64.zip`
+3. Extract the binary and place it in your `$PATH` (e.g. `/usr/local/bin` or `C:\Windows\System32`).
+
+### Install Desktop GUI
+
+Native packaged desktop releases are built via `fyne package` for each platform:
+- **macOS**: Download `skills-gui-darwin-universal.zip`, extract `Skills Manager.app`, and drag it into `/Applications`.
+- **Windows**: Download `skills-gui-windows-amd64.zip`, extract, and run `skills-gui.exe`.
+- **Linux**: Download `skills-gui-linux-amd64.tar.gz`, extract, and launch the binary.
+
+### Build from Source
+
+#### Prerequisites
+- **Go 1.21+**
+- On Linux (only needed for compiling the GUI binary, not the CLI):
+  ```bash
+  sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+  ```
+
+#### Building
+```bash
+# Clone the repository
+git clone https://github.com/skilled-manager/skills-manager.git
+cd skills-manager
+
+# Build pure static CLI binary
+make build-cli
+
+# Run Desktop GUI directly
+make run-gui
+
+# Run unit tests
+make test
+```
+
+---
+
+## Using as a Go Library (`pkg/core`)
+
+The `pkg/core` package provides a standalone Go API for managing agent skills, evaluating deployment states, computing directory drift, and converting skills between formats without any GUI or CGO requirements.
+
+### Installation
+```bash
+go get github.com/skilled-manager/skills-manager/pkg/core
+```
+
+### Code Example
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/skilled-manager/skills-manager/pkg/core"
+)
+
+func main() {
+	// Initialize manager with custom or default paths
+	mgr, err := core.NewManager(
+		core.WithCanonicalDir("~/.agent-skills"),
+		core.WithConfigDir("~/.agent-skills-manager"),
+	)
+	if err != nil {
+		log.Fatalf("Failed to initialize manager: %v", err)
+	}
+
+	// 1. Create a new skill
+	skill, err := core.CreateSkill(
+		mgr.CanonicalDir,
+		"code-reviewer",
+		"Reviews pull requests for performance and security",
+		"# Code Reviewer\n\nEnsure all errors are handled and memory leaks checked.",
+	)
+	if err != nil {
+		log.Printf("Skill might already exist: %v", err)
+	} else {
+		fmt.Printf("Created skill: %s\n", skill.Name)
+	}
+
+	// 2. List all skills
+	skills, err := core.ListSkills(mgr.CanonicalDir)
+	if err != nil {
+		log.Fatalf("Failed to list skills: %v", err)
+	}
+
+	// 3. Enable for a specific target
+	res, err := mgr.Enable("code-reviewer", "claude")
+	if err != nil {
+		log.Printf("Enable error: %v", err)
+	} else {
+		fmt.Printf("Enabled on Claude: %s (%s)\n", res.TargetPath, res.Mode)
+	}
+
+	// 4. Inspect status
+	status, _ := mgr.Status("code-reviewer", "claude")
+	fmt.Printf("Status on Claude: %s (%s)\n", status.Code, status.Message)
+
+	// 5. Synchronize all drifted copies & TOML files
+	report, err := mgr.Sync()
+	if err != nil {
+		log.Fatalf("Sync error: %v", err)
+	}
+	fmt.Printf("Sync report: %d updated, %d skipped\n", len(report.Updated), len(report.Skipped))
+}
+```
+
+---
+
 ## Architecture Overview
 
 ```
 skills-manager/
+├── .github/
+│   └── workflows/
+│       └── release.yml          # Automated CI/CD release workflow (GoReleaser + Fyne packaging)
+├── .goreleaser.yaml             # Multi-platform static CLI build configuration (CGO off)
 ├── cmd/
 │   ├── skills/                  # Command-line interface
-│   │   └── main.go
+│   │   └── main.go              # CLI entrypoint (CGO_ENABLED=0)
 │   └── skills-gui/              # Native Fyne GUI application
-│       └── main.go
+│       └── main.go              # Desktop GUI entrypoint
+├── pkg/
+│   └── core/                    # Pure Go library (Zero Fyne imports, importable)
+│       ├── config.go            # Target configurations & defaults
+│       ├── enable.go            # Enable, Disable, and Sync operations
+│       ├── export.go            # ZIP export of canonical skills & nested folders
+│       ├── frontmatter.go       # YAML frontmatter parsing, validation & serialization
+│       ├── gemini.go            # Gemini CLI TOML conversion (<skill>.toml)
+│       ├── hash.go              # Deterministic directory & file hashing for drift detection
+│       ├── import.go            # Scanning & importing existing target skills
+│       ├── link.go              # Cross-platform symlink/junction/copy fallback
+│       ├── manager.go           # Central Manager coordinator
+│       ├── path.go              # Path expansion (~, $ENV, %VAR%)
+│       ├── skill.go             # Canonical skill CRUD & parsing
+│       ├── state.go             # State tracking (~/.agent-skills-manager/state.json)
+│       ├── status.go            # Cell status evaluation (enabled/disabled/conflict/drifted/broken)
+│       ├── watcher.go           # fsnotify watcher with debounced event dispatch
+│       ├── core_test.go         # Core unit test suite
+│       └── gemini_test.go       # Gemini TOML unit test suite
 ├── internal/
-│   ├── core/                    # Pure Go domain logic (Zero Fyne imports, 100% tested)
-│   │   ├── config.go            # Target configurations & defaults
-│   │   ├── enable.go            # Enable, Disable, and Sync operations
-│   │   ├── export.go            # ZIP export of skills
-│   │   ├── frontmatter.go       # YAML frontmatter parsing, validation & serialization
-│   │   ├── gemini.go            # Gemini CLI TOML conversion
-│   │   ├── hash.go              # Deterministic directory & file hashing for drift detection
-│   │   ├── import.go            # Scanning & importing existing target skills
-│   │   ├── link.go              # Cross-platform symlink/junction/copy fallback
-│   │   ├── manager.go           # Central Manager coordinator
-│   │   ├── path.go              # Path expansion (~, $ENV, %VAR%)
-│   │   ├── skill.go             # Canonical skill CRUD & parsing
-│   │   ├── state.go             # State tracking (~/.agent-skills-manager/state.json)
-│   │   ├── status.go            # Cell status evaluation (enabled/disabled/conflict/drifted/broken)
-│   │   ├── watcher.go           # fsnotify watcher with debounced event dispatch
-│   │   ├── core_test.go         # Comprehensive unit tests
-│   │   └── gemini_test.go       # Gemini TOML unit tests
-│   └── ui/                      # Fyne UI layer (calls only core)
+│   └── ui/                      # Fyne desktop UI layer (calls only pkg/core)
 │       ├── app.go               # Main window layout, split views, watcher integration
 │       ├── dialogs.go           # New Skill, Import Existing, Settings, Sync Report dialogs
 │       ├── editor.go            # Multi-line SKILL.md editor with frontmatter validation
@@ -56,6 +203,7 @@ skills-manager/
 │       ├── types.go             # UI constants, status color palette
 │       └── ui_test.go           # UI component test suite
 ├── Makefile                     # Build & test automation
+├── LICENSE                      # MIT License
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -110,6 +258,7 @@ skills-manager/
 ## Features
 
 - **Single Canonical Source**: Maintain skills in one directory (`~/.agent-skills`) and deploy anywhere.
+- **Pure Go CLI with Zero CGO**: Compile and run anywhere without C dependencies (`CGO_ENABLED=0`).
 - **Cross-Platform Symlinks & Fallbacks**:
   - Linux & macOS: Direct filesystem symlinks.
   - Windows: Attempts symlinks; automatically falls back to Directory Junctions (`mklink /J`) or Directory Copies when elevated privileges are not granted.
@@ -123,50 +272,7 @@ skills-manager/
 
 ---
 
-## Prerequisites & System Requirements
-
-- **Go**: Version 1.21 or higher (tested with Go 1.27+).
-- **Linux GUI Requirements**:
-  When compiling the desktop GUI on Linux (requires X11/Wayland and OpenGL libraries):
-  ```bash
-  sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev
-  ```
-- **macOS / Windows**: Standard Go toolchain (no extra system libraries required).
-
----
-
-## Quickstart & Build Steps
-
-### 1. Run the Desktop GUI
-```bash
-go run ./cmd/skills-gui
-```
-
-### 2. Run the CLI
-```bash
-go run ./cmd/skills list
-```
-
-### 3. Build Binaries
-```bash
-# Build both CLI and GUI into ./bin
-make all
-
-# Or individually:
-make build-cli
-make build-gui
-```
-
-### 4. Run Unit Tests
-```bash
-make test
-```
-
----
-
 ## CLI Usage
-
-The `skills` CLI provides quick automation for terminal workflows:
 
 ```bash
 # List all canonical skills and their deployment status per target
@@ -266,7 +372,7 @@ The default targets in `targets.json` use standard default directory paths for e
 
 ## Testing & Quality Assurance
 
-The codebase features comprehensive unit test coverage in `internal/core`:
+The codebase features comprehensive unit test coverage in `pkg/core`:
 - ✅ YAML Frontmatter parsing, validation, and serialization round-tripping.
 - ✅ Symlink mode enable/disable and broken link detection.
 - ✅ Copy mode enable/disable and recursive directory drift detection.
@@ -277,5 +383,11 @@ The codebase features comprehensive unit test coverage in `internal/core`:
 
 Run unit tests:
 ```bash
-go test -v -race ./internal/core/...
+make test
 ```
+
+---
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).

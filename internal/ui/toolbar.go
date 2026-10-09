@@ -5,7 +5,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"github.com/user/skills-manager/internal/core"
+	"github.com/skilled-manager/skills-manager/pkg/core"
 )
 
 // AppToolbar creates the main top toolbar for the application.

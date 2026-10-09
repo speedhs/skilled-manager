@@ -1,0 +1,153 @@
+name: Release & Packaging
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Run Core Tests
+        run: |
+          go test -v -race ./pkg/core/...
+
+  build-cli:
+    name: Build Multi-Platform CLI (GoReleaser)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-gui-linux:
+    name: Package GUI (Linux)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Install Linux GUI Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
+
+      - name: Install Fyne Packaging CLI
+        run: |
+          go install fyne.io/fyne/v2/cmd/fyne@latest
+
+      - name: Package GUI with Fyne
+        run: |
+          cd cmd/skills-gui
+          fyne package -os linux -name "skills-gui" -appID "com.agent.skillsmanager"
+          tar -czvf ../../skills-gui-linux-amd64.tar.gz skills-gui.tar.xz || tar -czvf ../../skills-gui-linux-amd64.tar.gz *
+
+      - name: Upload Linux GUI Artifact to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: skills-gui-linux-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-gui-macos:
+    name: Package GUI (macOS)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Install Fyne Packaging CLI
+        run: |
+          go install fyne.io/fyne/v2/cmd/fyne@latest
+
+      - name: Package GUI with Fyne
+        run: |
+          cd cmd/skills-gui
+          fyne package -os darwin -name "Skills Manager" -appID "com.agent.skillsmanager"
+          zip -r ../../skills-gui-darwin-universal.zip "Skills Manager.app"
+
+      - name: Upload macOS GUI Artifact to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: skills-gui-darwin-universal.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-gui-windows:
+    name: Package GUI (Windows)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Install Fyne Packaging CLI
+        run: |
+          go install fyne.io/fyne/v2/cmd/fyne@latest
+
+      - name: Package GUI with Fyne
+        shell: bash
+        run: |
+          cd cmd/skills-gui
+          fyne package -os windows -name "skills-gui" -appID "com.agent.skillsmanager"
+          powershell Compress-Archive -Path skills-gui.exe -DestinationPath ../../skills-gui-windows-amd64.zip
+
+      - name: Upload Windows GUI Artifact to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: skills-gui-windows-amd64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

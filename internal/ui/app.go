@@ -9,7 +9,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	"github.com/user/skills-manager/internal/core"
+	"github.com/skilled-manager/skills-manager/pkg/core"
 )
 
 // SkillsApp encapsulates the Fyne desktop application.

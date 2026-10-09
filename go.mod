@@ -1,4 +1,4 @@
-module github.com/user/skills-manager
+module github.com/skilled-manager/skills-manager
 
 go 1.27.1
 
