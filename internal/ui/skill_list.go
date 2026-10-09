@@ -30,7 +30,7 @@ func NewSkillListPane(onSelect func(skill core.Skill)) *SkillListPane {
 	}
 
 	pane.searchEntry = widget.NewEntry()
-	pane.searchEntry.SetPlaceHolder("🔍 Search skills...")
+	pane.searchEntry.SetPlaceHolder("Search skills...")
 	pane.searchEntry.OnChanged = func(query string) {
 		pane.filter(query)
 	}

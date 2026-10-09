@@ -1,4 +1,4 @@
-# Skills Manager 🛠️
+# Skills Manager
 
 **Skills Manager** is a cross-platform native desktop application and CLI written in Go using [Fyne](https://fyne.io/) (v2.5+) that organizes and manages AI agent "skills" (`SKILL.md` folders) from a single canonical store and exposes them to multiple AI tools: **Claude Code**, **Codex CLI**, **OpenCode**, and **Gemini CLI**.
 
@@ -9,7 +9,7 @@ The core engine is located in [`pkg/core`](./pkg/core) as a clean, standalone, p
 
 ---
 
-## 📑 Table of Contents
+## Table of Contents
 - [Installation](#installation)
   - [Install CLI via Go](#install-cli-via-go)
   - [Download Pre-Built Binaries](#download-pre-built-binaries)
@@ -245,13 +245,13 @@ skills-manager/
 
 ## Tool Target Matrix
 
-| Status | Dot / Badge | Description | Action Behavior |
-| :--- | :---: | :--- | :--- |
-| **`enabled`** | 🟢 Green | Active and synchronized with canonical store | Unchecking disables and removes symlink/copy |
-| **`disabled`** | ⚪ Gray | Not installed in target directory | Checking enables skill for that target |
-| **`drifted`** | 🟡 Yellow | Target copy or Gemini TOML differs from canonical `SKILL.md` | "Sync All" or re-checking updates copy |
-| **`conflict`** | 🔴 Red | Target exists but was NOT created by Skills Manager | Collision refused; protected from overwrite/deletion |
-| **`broken`** | 🟣 Purple | Symlink target is missing or dangling | "Sync All" repairs link if canonical exists |
+| Status | Badge / Indicator | Description | Action Behavior |
+| :--- | :--- | :--- | :--- |
+| **`enabled`** | Green | Active and synchronized with canonical store | Unchecking disables and removes symlink/copy |
+| **`disabled`** | Gray | Not installed in target directory | Checking enables skill for that target |
+| **`drifted`** | Yellow | Target copy or Gemini TOML differs from canonical `SKILL.md` | "Sync All" or re-checking updates copy |
+| **`conflict`** | Red | Target exists but was NOT created by Skills Manager | Collision refused; protected from overwrite/deletion |
+| **`broken`** | Purple | Symlink target is missing or dangling | "Sync All" repairs link if canonical exists |
 
 ---
 
@@ -312,15 +312,15 @@ skills targets
 +-----------------------------------------------------------------------------------------------+
 | [New Skill]  [Import Existing]  [Sync All]  [Export Zip]  |  [Settings]  [Refresh]            |
 +----------------------+------------------------------------------------------------------------+
-| 🔍 Search skills...  | Tool Deployment Matrix                                                 |
+| Search skills...     | Tool Deployment Matrix                                                 |
 +----------------------+------------------------------------------------------------------------+
-| • git-commit-helper  | Skill          Claude Code       Codex CLI     OpenCode    Gemini CLI |
-|   Generates commits  | git-commit...  [x] 🟢 Enabled   [x] 🟢 Enabled [ ] ⚪ Dis.. [x] 🟢 Enabled|
-|                      | code-reviewer  [x] 🟢 Enabled   [ ] ⚪ Disab.. [x] 🟡 Drift [x] 🟢 Enabled|
-| • code-reviewer      | untracked-ext  [ ] 🔴 Conflict  [ ] ⚪ Disab.. [ ] ⚪ Dis.. [ ] ⚪ Dis..  |
+| * git-commit-helper  | Skill          Claude Code       Codex CLI     OpenCode    Gemini CLI |
+|   Generates commits  | git-commit...  [x] Enabled      [x] Enabled    [ ] Disabled[x] Enabled |
+|                      | code-reviewer  [x] Enabled      [ ] Disabled   [x] Drifted [x] Enabled |
+| * code-reviewer      | untracked-ext  [ ] Conflict     [ ] Disabled   [ ] Disabled[ ] Disabled|
 |   Reviews code       +------------------------------------------------------------------------+
 |                      | SKILL.md Editor - git-commit-helper                [ Save SKILL.md ]   |
-| • test-generator     | ✓ Frontmatter valid (name matches folder, description non-empty)       |
+| * test-generator     | [Valid] Frontmatter valid (name matches folder, description non-empty) |
 |   Writes Go tests    | ---------------------------------------------------------------------- |
 |                      | ---                                                                    |
 |                      | name: git-commit-helper                                                |
@@ -334,7 +334,7 @@ skills targets
 ```
 
 1. **Left Pane**: Search and filter skills in real time.
-2. **Main (Top-Right)**: Interactive deployment matrix. Check/uncheck cells to enable/disable tools. Click **ℹ** for details and collision diagnostics.
+2. **Main (Top-Right)**: Interactive deployment matrix. Check/uncheck cells to enable/disable tools. Click **Info** for details and collision diagnostics.
 3. **Editor (Bottom-Right)**: Edit `SKILL.md` with live frontmatter syntax and directory match validation.
 4. **Toolbar Actions**:
    - **New Skill**: Modal form for name, description, and starting prompt.
@@ -373,13 +373,13 @@ The default targets in `targets.json` use standard default directory paths for e
 ## Testing & Quality Assurance
 
 The codebase features comprehensive unit test coverage in `pkg/core`:
-- ✅ YAML Frontmatter parsing, validation, and serialization round-tripping.
-- ✅ Symlink mode enable/disable and broken link detection.
-- ✅ Copy mode enable/disable and recursive directory drift detection.
-- ✅ Gemini CLI TOML conversion and synchronization.
-- ✅ Collision protection and refusal of unmanaged files.
-- ✅ Import of existing unmanaged skills and Gemini TOML commands.
-- ✅ ZIP archive creation and nested file export.
+- YAML Frontmatter parsing, validation, and serialization round-tripping.
+- Symlink mode enable/disable and broken link detection.
+- Copy mode enable/disable and recursive directory drift detection.
+- Gemini CLI TOML conversion and synchronization.
+- Collision protection and refusal of unmanaged files.
+- Import of existing unmanaged skills and Gemini TOML commands.
+- ZIP archive creation and nested file export.
 
 Run unit tests:
 ```bash

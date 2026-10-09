@@ -157,7 +157,7 @@ func (mp *MatrixPane) buildCell(skill core.Skill, target core.Target) fyne.Canva
 	statusLbl := widget.NewLabel(GetStatusLabel(status.Code))
 
 	// Info button with tooltip/dialog
-	infoBtn := widget.NewButton("ℹ", func() {
+	infoBtn := widget.NewButton("Info", func() {
 		title := fmt.Sprintf("%s on %s", skill.Name, target.Label)
 		msg := fmt.Sprintf("Status: %s\nTarget Path: %s\n\nDetails:\n%s",
 			GetStatusLabel(status.Code),

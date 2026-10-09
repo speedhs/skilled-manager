@@ -86,18 +86,18 @@ func (ep *EditorPane) validate(content string) {
 
 	parsed, err := core.ParseFrontmatter(content)
 	if err != nil {
-		ep.validationLabel.SetText(fmt.Sprintf("⚠ Frontmatter error: %v", err))
+		ep.validationLabel.SetText(fmt.Sprintf("[Error] Frontmatter error: %v", err))
 		ep.saveBtn.Disable()
 		return
 	}
 
 	if err := core.ValidateFrontmatter(parsed.Frontmatter, ep.currentSkill.Name); err != nil {
-		ep.validationLabel.SetText(fmt.Sprintf("⚠ Validation error: %v", err))
+		ep.validationLabel.SetText(fmt.Sprintf("[Error] Validation error: %v", err))
 		ep.saveBtn.Disable()
 		return
 	}
 
-	ep.validationLabel.SetText("✓ Frontmatter valid (name matches folder, description non-empty)")
+	ep.validationLabel.SetText("[Valid] Frontmatter valid (name matches folder, description non-empty)")
 	ep.saveBtn.Enable()
 }
 

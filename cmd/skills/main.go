@@ -142,7 +142,7 @@ func handleList(mgr *core.Manager) {
 	fmt.Printf("Canonical store: %s (%d skills)\n\n", mgr.CanonicalDir, len(skills))
 
 	for _, skill := range skills {
-		fmt.Printf("• %s\n", skill.Name)
+		fmt.Printf("- %s\n", skill.Name)
 		if skill.Description != "" {
 			fmt.Printf("  Description: %s\n", skill.Description)
 		}
@@ -181,7 +181,7 @@ func handleEnable(mgr *core.Manager, skillName, targetID string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed for %s: %v\n", target.Label, err)
 		} else {
-			fmt.Printf("✓ %s: %s\n", target.Label, res.Message)
+			fmt.Printf("  [OK] %s: %s\n", target.Label, res.Message)
 			successCount++
 		}
 	}
@@ -205,7 +205,7 @@ func handleDisable(mgr *core.Manager, skillName, targetID string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed for %s: %v\n", target.Label, err)
 		} else {
-			fmt.Printf("✓ Disabled on %s\n", target.Label)
+			fmt.Printf("  [OK] Disabled on %s\n", target.Label)
 		}
 	}
 }
@@ -221,21 +221,21 @@ func handleSync(mgr *core.Manager) {
 	if len(report.Updated) > 0 {
 		fmt.Printf("\nUpdated (%d):\n", len(report.Updated))
 		for _, u := range report.Updated {
-			fmt.Printf("  ✓ %s\n", u)
+			fmt.Printf("  [OK] %s\n", u)
 		}
 	}
 
 	if len(report.Skipped) > 0 {
 		fmt.Printf("\nSkipped collisions (%d):\n", len(report.Skipped))
 		for _, s := range report.Skipped {
-			fmt.Printf("  ⚠ %s\n", s)
+			fmt.Printf("  [WARN] %s\n", s)
 		}
 	}
 
 	if len(report.Errors) > 0 {
 		fmt.Printf("\nErrors (%d):\n", len(report.Errors))
 		for _, e := range report.Errors {
-			fmt.Printf("  ✗ %s\n", e)
+			fmt.Printf("  [ERROR] %s\n", e)
 		}
 	}
 
@@ -274,10 +274,10 @@ func handleImport(mgr *core.Manager, args []string) {
 
 	imported, errs := mgr.ImportSelected(candidates)
 	for _, name := range imported {
-		fmt.Printf("✓ Imported and linked: %s\n", name)
+		fmt.Printf("  [OK] Imported and linked: %s\n", name)
 	}
 	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "✗ %v\n", e)
+		fmt.Fprintf(os.Stderr, "  [ERROR] %v\n", e)
 	}
 }
 
@@ -312,7 +312,7 @@ func handleTargets(mgr *core.Manager) {
 	targets := mgr.GetTargets()
 	fmt.Printf("Configured targets (%s):\n\n", mgr.TargetsPath)
 	for _, t := range targets {
-		fmt.Printf("• %s (%s)\n", t.Label, t.ID)
+		fmt.Printf("- %s (%s)\n", t.Label, t.ID)
 		fmt.Printf("  Path:   %s (expanded: %s)\n", t.Path, core.ExpandPath(t.Path))
 		fmt.Printf("  Mode:   %s\n", t.Mode)
 		fmt.Printf("  Format: %s\n\n", t.Format)

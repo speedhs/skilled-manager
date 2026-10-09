@@ -142,12 +142,12 @@ func ShowImportDialog(mgr *core.Manager, win fyne.Window, onComplete func()) {
 			imported, errs := mgr.ImportSelected(selected)
 			msg := fmt.Sprintf("Imported %d skill(s) into canonical store:\n", len(imported))
 			for _, name := range imported {
-				msg += fmt.Sprintf("• %s\n", name)
+				msg += fmt.Sprintf("- %s\n", name)
 			}
 			if len(errs) > 0 {
 				msg += "\nErrors:\n"
 				for _, e := range errs {
-					msg += fmt.Sprintf("⚠ %v\n", e)
+					msg += fmt.Sprintf("[Error] %v\n", e)
 				}
 			}
 
@@ -330,25 +330,25 @@ func ShowSyncReportDialog(mgr *core.Manager, win fyne.Window, onDone func()) {
 	msg := "Synchronization Results:\n\n"
 
 	if len(report.Updated) > 0 {
-		msg += fmt.Sprintf("✓ Synchronized (%d):\n", len(report.Updated))
+		msg += fmt.Sprintf("Synchronized (%d):\n", len(report.Updated))
 		for _, u := range report.Updated {
-			msg += fmt.Sprintf("  • %s\n", u)
+			msg += fmt.Sprintf("  - %s\n", u)
 		}
 		msg += "\n"
 	}
 
 	if len(report.Skipped) > 0 {
-		msg += fmt.Sprintf("⚠ Skipped Conflicts (%d):\n", len(report.Skipped))
+		msg += fmt.Sprintf("Skipped Conflicts (%d):\n", len(report.Skipped))
 		for _, s := range report.Skipped {
-			msg += fmt.Sprintf("  • %s\n", s)
+			msg += fmt.Sprintf("  - %s\n", s)
 		}
 		msg += "\n"
 	}
 
 	if len(report.Errors) > 0 {
-		msg += fmt.Sprintf("✗ Errors (%d):\n", len(report.Errors))
+		msg += fmt.Sprintf("Errors (%d):\n", len(report.Errors))
 		for _, e := range report.Errors {
-			msg += fmt.Sprintf("  • %s\n", e)
+			msg += fmt.Sprintf("  - %s\n", e)
 		}
 		msg += "\n"
 	}
