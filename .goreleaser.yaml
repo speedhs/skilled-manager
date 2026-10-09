@@ -72,7 +72,7 @@ changelog:
 
 release:
   github:
-    owner: skilled-manager
-    name: skills-manager
+    owner: speedhs
+    name: skilled-manager
   draft: false
   prerelease: auto
