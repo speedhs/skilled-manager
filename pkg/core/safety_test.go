@@ -351,14 +351,35 @@ func TestDestructiveOpsRefuseForeignAndSwappedPaths(t *testing.T) {
 	if err := os.Symlink("loop", filepath.Join(copyDest, "loop")); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.Disable(ctx, skill.Name, "opencode"); err != nil {
-		t.Fatal(err)
+	if err := mgr.Disable(ctx, skill.Name, "opencode"); !errors.Is(err, ErrConflict) {
+		t.Fatal("disable removed a copy after a symlink was added to it")
 	}
 	if _, err := os.ReadFile(filepath.Join(secret, "keep.txt")); err != nil {
-		t.Fatalf("recursive delete followed a symlink: %v", err)
+		t.Fatalf("secret file was damaged: %v", err)
 	}
-	if _, err := os.Lstat(copyDest); !os.IsNotExist(err) {
-		t.Fatalf("copy still present: %v", err)
+	if _, err := os.Lstat(copyDest); err != nil {
+		t.Fatalf("edited copy was removed: %v", err)
+	}
+
+	linked, err := CreateSkill(canonical, "linked-skill", "Linked", "# Linked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("SKILL.md", filepath.Join(linked.Path, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Enable(ctx, linked.Name, "opencode"); err != nil {
+		t.Fatal(err)
+	}
+	linkedDest, err := GetTargetDestinationPath(targets[2], linked.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Disable(ctx, linked.Name, "opencode"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(linkedDest); !os.IsNotExist(err) {
+		t.Fatalf("matching copy that contained a symlink was left behind: %v", err)
 	}
 
 	root := t.TempDir()

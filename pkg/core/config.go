@@ -122,6 +122,9 @@ func LoadTargets(filePath string) ([]Target, []string, error) {
 			warnings = append(warnings, fmt.Sprintf("target %q path: %v", targets[i].ID, err))
 		}
 	}
+	if err := inspectTargets(targets); err != nil {
+		warnings = append(warnings, err.Error())
+	}
 	return targets, warnings, nil
 }
 
@@ -175,14 +178,113 @@ func normalizeTarget(t *Target) error {
 	return nil
 }
 
-// ValidateTarget checks id, mode, format, and that path expands.
+// ValidateTarget checks id, mode, format, and that path expands to an absolute path.
 func ValidateTarget(t Target) error {
 	cp := t
 	if err := normalizeTarget(&cp); err != nil {
 		return err
 	}
-	if _, err := ExpandPath(cp.Path); err != nil {
+	expanded, err := ExpandPath(cp.Path)
+	if err != nil {
 		return err
+	}
+	if !filepath.IsAbs(expanded) {
+		return fmt.Errorf("%w: target %s path %q is not absolute", ErrInvalidPath, cp.ID, expanded)
+	}
+	return nil
+}
+
+// inspectTargets checks each target and rejects duplicate ids or overlapping paths.
+// It does not know the canonical store; validateTargetSet adds that.
+func inspectTargets(targets []Target) error {
+	seen := map[string]struct{}{}
+	type expanded struct {
+		id   string
+		path string
+	}
+	var paths []expanded
+	for _, t := range targets {
+		if err := ValidateTarget(t); err != nil {
+			return err
+		}
+		cp := t
+		if err := normalizeTarget(&cp); err != nil {
+			return err
+		}
+		if _, ok := seen[cp.ID]; ok {
+			return fmt.Errorf("%w: duplicate target id %q", ErrInvalidName, cp.ID)
+		}
+		seen[cp.ID] = struct{}{}
+		path, err := ExpandPath(cp.Path)
+		if err != nil {
+			return err
+		}
+		for _, prev := range paths {
+			if pathsOverlap(path, prev.path) {
+				return fmt.Errorf("%w: target %s path overlaps target %s", ErrInvalidPath, cp.ID, prev.id)
+			}
+		}
+		paths = append(paths, expanded{id: cp.ID, path: path})
+	}
+	return nil
+}
+
+// validateTargetSet is inspectTargets plus a refusal to deploy into the
+// canonical store or the config directory.
+func validateTargetSet(canonical, config string, targets []Target) error {
+	if err := inspectTargets(targets); err != nil {
+		return err
+	}
+	for _, t := range targets {
+		cp := t
+		if err := normalizeTarget(&cp); err != nil {
+			return err
+		}
+		path, err := ExpandPath(cp.Path)
+		if err != nil {
+			return err
+		}
+		if pathsOverlap(path, canonical) {
+			return fmt.Errorf("%w: target %s path overlaps the canonical store", ErrInvalidPath, cp.ID)
+		}
+		if config != "" && pathsOverlap(path, config) {
+			return fmt.Errorf("%w: target %s path overlaps the config directory", ErrInvalidPath, cp.ID)
+		}
+	}
+	return nil
+}
+
+// rejectUnsafeTarget refuses to deploy through one target that is relative,
+// overlaps another configured target, or overlaps the store or config directory.
+func (m *Manager) rejectUnsafeTarget(target Target) error {
+	if err := ValidateTarget(target); err != nil {
+		return err
+	}
+	cp := target
+	if err := normalizeTarget(&cp); err != nil {
+		return err
+	}
+	path, err := ExpandPath(cp.Path)
+	if err != nil {
+		return err
+	}
+	if pathsOverlap(path, m.CanonicalDir) {
+		return fmt.Errorf("%w: target %s path overlaps the canonical store", ErrInvalidPath, cp.ID)
+	}
+	if pathsOverlap(path, m.ConfigDir) {
+		return fmt.Errorf("%w: target %s path overlaps the config directory", ErrInvalidPath, cp.ID)
+	}
+	for _, other := range m.targets {
+		if other.ID == cp.ID {
+			continue
+		}
+		otherPath, err := ExpandPath(other.Path)
+		if err != nil {
+			continue
+		}
+		if pathsOverlap(path, otherPath) {
+			return fmt.Errorf("%w: target %s path overlaps target %s", ErrInvalidPath, cp.ID, other.ID)
+		}
 	}
 	return nil
 }
@@ -219,6 +321,9 @@ func GetTargetDestinationPath(target Target, skillName string) (string, error) {
 	dir, err := ExpandPath(target.Path)
 	if err != nil {
 		return "", err
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%w: target %s path %q is not absolute", ErrInvalidPath, target.ID, dir)
 	}
 	name := skillName
 	if target.Format == FormatGeminiTOML {

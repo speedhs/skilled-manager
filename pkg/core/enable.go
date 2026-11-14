@@ -41,6 +41,9 @@ func (m *Manager) enableLocked(ctx context.Context, skillName, targetID string) 
 	if !ok {
 		return nil, fmt.Errorf("%w: target %q", ErrNotFound, targetID)
 	}
+	if err := m.rejectUnsafeTarget(target); err != nil {
+		return nil, err
+	}
 	canonical, err := skillDir(m.CanonicalDir, skillName)
 	if err != nil {
 		return nil, err
@@ -102,11 +105,11 @@ func (m *Manager) enableSymlink(target Target, skillName, canonical, dest string
 		if !ok {
 			return nil, fmt.Errorf("%w: missing state for %s", ErrConflict, dest)
 		}
-		if _, err := m.backupLocked(target.ID, skillName, dest); err != nil {
-			return nil, err
-		}
 		id, _, err := authorizeDelete(m.files(), dest, rec)
 		if err != nil {
+			return nil, err
+		}
+		if _, err := m.backupLocked(target.ID, skillName, dest); err != nil {
 			return nil, err
 		}
 		if err := m.files().RemoveTree(dest, id); err != nil {
@@ -364,21 +367,24 @@ func authorizeDelete(fsys fileSystem, dest string, rec TargetRecord) (FileID, st
 	if err != nil {
 		return FileID{}, "", err
 	}
-	if rec.IdentityValid {
-		if !id.same(recordID(rec)) {
-			return FileID{}, "", fmt.Errorf("%w: file identity changed at %s", ErrConflict, dest)
-		}
-		return id, hash, nil
+	// Identity alone is not proof. The kernel reuses inode numbers, and a
+	// matching inode can be a directory the user created after deleting ours.
+	// The recorded content hash has to match as well. A legacy record with no
+	// inode is accepted only when that hash matches.
+	if rec.Hash == "" || rec.Hash != hash {
+		return FileID{}, "", fmt.Errorf("%w: refusing to delete %s because its content does not match the recorded deployment", ErrConflict, dest)
 	}
-	if rec.Hash != "" && rec.Hash == hash {
-		return id, hash, nil
+	if rec.IdentityValid && !id.same(recordID(rec)) {
+		return FileID{}, "", fmt.Errorf("%w: file identity changed at %s", ErrConflict, dest)
 	}
-	return FileID{}, "", fmt.Errorf("%w: refusing to delete %s without a matching identity", ErrConflict, dest)
+	return id, hash, nil
 }
 
 // Disable removes a deployment this tool created.
 // Symlinks are removed only when they point at the canonical skill.
-// Copies and TOML files are removed only when state identity matches.
+// Copies and TOML files are removed only when the recorded content hash
+// matches and, when an inode was stored, that inode still matches.
+// A copy the user edited is left in place.
 func (m *Manager) Disable(ctx context.Context, skillName, targetID string) error {
 	return m.mutate(ctx, func() error {
 		return m.disableLocked(skillName, targetID)
@@ -392,6 +398,9 @@ func (m *Manager) disableLocked(skillName, targetID string) error {
 	}
 	canonical, err := skillDir(m.CanonicalDir, skillName)
 	if err != nil {
+		return err
+	}
+	if err := m.rejectUnsafeTarget(target); err != nil {
 		return err
 	}
 	dest, err := GetTargetDestinationPath(target, skillName)

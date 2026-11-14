@@ -6,7 +6,7 @@ The findings below describe the tree at `ac6263e`. The production changes addres
 
 Fixed in `pkg/core`, `internal/cli`, and `internal/ui`:
 
-- Skill names are a single path segment. Disable and delete require a symlink to the canonical skill or a matching `state.json` identity, and they do not follow symlinks.
+- Skill names are a single path segment. Disable and delete require a symlink to the canonical skill, or a copy whose content hash matches the ledger and whose inode matches when one was stored. They do not follow symlinks. A matching inode with different bytes is left in place. Mutations reload the ledger after taking the file lock. A backup that cannot be kept aborts the delete. Target paths must be absolute and must not overlap each other, the canonical store, or the config directory. A TOML import that drops comments or unknown keys keeps the original file in `backups/`. `--dry-run` does not create the store or `targets.json`.
 - Enable and import use exclusive create and roll back a failed publish. `state.json` is written atomically, versioned, and quarantined when corrupt. Mutations take a cross-process lock.
 - Path expansion rejects an unset or empty variable. Sync does not overwrite a target edit. Hashes ignore `.git`, `.DS_Store`, and `Thumbs.db` and do not follow symlinks. Zip import rejects slip, bombs, and symlink entries.
 - The CLI parses flags, uses exit codes, and returns partial failure as exit 4. The module path matches `github.com/speedhs/skilled-manager`.

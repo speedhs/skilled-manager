@@ -55,11 +55,11 @@ Creates use exclusive rename or `os.Symlink` failure as the collision signal. A 
 
 ## Disable
 
-`Lstat` the destination. A symlink is removed only when its link text, after cleaning, is the canonical skill path. The link is not evaluated. A copy or TOML file is removed only when the state record's inode and device match, or when no inode was stored and the content hash matches. Removal opens with `O_NOFOLLOW` and checks the inode again. Recursive removal does not follow symlinks.
+`Lstat` the destination. A symlink is removed only when its link text, after cleaning, is the canonical skill path. The link is not evaluated. A copy or TOML file is removed only when its content hash matches the hash stored in `state.json`. When the record also has an inode, that inode must match. Identity alone is not enough: inode numbers are reused, so a directory the user created at the same path is left in place, and so is a copy the user edited. Removal opens with `O_NOFOLLOW` and checks the inode again. Recursive removal does not follow symlinks. A backup is taken before the delete. If the backup is larger than the retention limit, or the new backup cannot be kept, the delete does not run.
 
 ## Import
 
-Copy the source to a staging directory, publish it into the canonical store, rename the source aside, link the canonical skill back, then remove the aside copy. If linking fails, the aside copy is moved back and the canonical publish is removed. The source is not deleted first. A zip import commits each skill on its own; a later skill's failure does not roll back skills already imported from that zip.
+Copy the source to a staging directory, publish it into the canonical store, rename the source aside, link the canonical skill back, then remove the aside copy. If linking fails, the aside copy is moved back and the canonical publish is removed. The source is not deleted first. A TOML import whose generated command differs from the original file stores those original bytes under `backups/` before the source is replaced. A zip import commits each skill on its own; a later skill's failure does not roll back skills already imported from that zip.
 
 ## Hash and archives
 
@@ -67,7 +67,7 @@ The directory hash is SHA-256 over relative paths in sorted order, with forward 
 
 ## Concurrency
 
-Mutations take `manager.lock` (`flock` or `LockFileEx`) and then the process mutex. `Status` takes the read lock only. Nested mutations call the `Locked` methods; taking the public lock twice deadlocks. The watcher debounces (250 ms), ignores symlink directories, closes once, and is covered by a `goleak` test.
+Mutations take `manager.lock` (`flock` or `LockFileEx`) and then the process mutex, then reread `targets.json` and `state.json` before changing anything. That reload is what stops a long-lived process from writing a stale ledger over another process's records. `Status` takes the read lock only. Nested mutations call the `Locked` methods; taking the public lock twice deadlocks. The watcher debounces (250 ms), ignores symlink directories, closes once, and is covered by a `goleak` test. A dry run does not create the store, the config directory, or `targets.json`.
 
 ## Logging
 

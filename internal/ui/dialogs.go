@@ -153,10 +153,14 @@ func presentImportDialog(mgr *core.Manager, win fyne.Window, onComplete func(), 
 
 			go func() {
 				imported, errs := mgr.ImportSelected(context.Background(), selected)
+				notes := mgr.Notes()
 				fyne.Do(func() {
 					msg := fmt.Sprintf("Imported %d skill(s) into canonical store:\n", len(imported))
 					for _, name := range imported {
 						msg += fmt.Sprintf("- %s\n", name)
+					}
+					for _, note := range notes {
+						msg += fmt.Sprintf("\n%s\n", note)
 					}
 					if len(errs) > 0 {
 						msg += "\nErrors:\n"

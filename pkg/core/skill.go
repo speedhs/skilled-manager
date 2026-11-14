@@ -31,9 +31,6 @@ func ListSkills(canonicalDir string) ([]Skill, error) {
 	info, err := os.Lstat(clean)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(clean, 0o755); err != nil {
-				return nil, fmt.Errorf("create canonical dir: %w", err)
-			}
 			return []Skill{}, nil
 		}
 		return nil, err

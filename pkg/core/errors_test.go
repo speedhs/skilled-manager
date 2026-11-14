@@ -77,7 +77,7 @@ func TestDirectErrorPaths(t *testing.T) {
 	if _, err := ListSkills(file); err == nil {
 		t.Fatal("list a file")
 	}
-	if err := os.Mkdir(filepath.Join(missing, "Bad Name"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(missing, "Bad Name"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if skills, err := ListSkills(missing); err != nil || len(skills) != 0 {

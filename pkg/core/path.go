@@ -219,6 +219,15 @@ func samePath(a, b string) bool {
 	return pathsEqual(aa, bb)
 }
 
+// pathsOverlap reports whether a and b are the same path, or one is inside the other.
+// Comparison is lexical. Symlinks are not followed.
+func pathsOverlap(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return dirContains(a, b) || dirContains(b, a)
+}
+
 func resolveLink(linkPath, target string) string {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(linkPath), target)

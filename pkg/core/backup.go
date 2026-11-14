@@ -46,6 +46,13 @@ func (m *Manager) backupLocked(targetID, skill, src string) (string, error) {
 	if err := ValidateSkillName(skill); err != nil {
 		return "", err
 	}
+	size := info.Size()
+	if info.IsDir() {
+		size = dirSize(src)
+	}
+	if size > maxBackupBytes {
+		return "", fmt.Errorf("backup of %s is %d bytes, above the %d byte limit, so nothing was changed", src, size, maxBackupBytes)
+	}
 	id := time.Now().UTC().Format("20060102T150405.000000000Z") + "__" + targetID + "__" + skill + "__" + randHex(2)
 	if err := validateBackupID(id); err != nil {
 		return "", err
@@ -70,7 +77,10 @@ func (m *Manager) backupLocked(targetID, skill, src string) (string, error) {
 		_ = os.RemoveAll(root)
 		return "", err
 	}
-	m.pruneBackups()
+	if err := m.pruneBackups(id); err != nil {
+		_ = os.RemoveAll(root)
+		return "", err
+	}
 	m.log().Info("backed up deployment", "id", id, "skill", skill, "target", targetID)
 	return id, nil
 }
@@ -199,33 +209,59 @@ func (m *Manager) restoreLocked(id string) error {
 	return m.recordDeployment(target, meta.Skill, dest, ModeCopy, false)
 }
 
-func (m *Manager) pruneBackups() {
+// pruneBackups drops the oldest backups until the count and byte caps hold.
+// keep is never removed. If keep itself does not fit, nothing else is removed
+// and the error tells the caller to discard keep and leave the source in place.
+func (m *Manager) pruneBackups(keep string) error {
 	root := filepath.Join(m.ConfigDir, "backups")
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	type item struct {
 		name string
 		size int64
 	}
-	var items []item
+	var others []item
+	var keepSize int64
+	var haveKeep bool
 	var total int64
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		size := dirSize(filepath.Join(root, entry.Name()))
-		items = append(items, item{name: entry.Name(), size: size})
 		total += size
+		if keep != "" && entry.Name() == keep {
+			haveKeep = true
+			keepSize = size
+			continue
+		}
+		others = append(others, item{name: entry.Name(), size: size})
 	}
-	for len(items) > maxBackups || (len(items) > 0 && total > maxBackupBytes) {
-		old := items[0]
-		_ = os.RemoveAll(filepath.Join(root, old.name))
+	if haveKeep && keepSize > maxBackupBytes {
+		return fmt.Errorf("backup %s is %d bytes, above the %d byte limit, so nothing was changed", keep, keepSize, maxBackupBytes)
+	}
+	kept := 0
+	if haveKeep {
+		kept = 1
+	}
+	for len(others) > 0 && (len(others)+kept > maxBackups || total > maxBackupBytes) {
+		old := others[0]
+		if err := os.RemoveAll(filepath.Join(root, old.name)); err != nil {
+			return err
+		}
 		total -= old.size
-		items = items[1:]
+		others = others[1:]
 	}
+	if total > maxBackupBytes || len(others)+kept > maxBackups {
+		return fmt.Errorf("backup %s does not fit in the retention limit, so nothing was changed", keep)
+	}
+	return nil
 }
 
 func dirSize(root string) int64 {

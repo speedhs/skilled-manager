@@ -52,6 +52,12 @@ func (m *Manager) Doctor(ctx context.Context) (*DoctorReport, error) {
 	report.Checks = append(report.Checks, m.checkWritable("canonical", m.CanonicalDir, "Create the directory or pick another path with --canonical."))
 	report.Checks = append(report.Checks, m.checkWritable("config", m.ConfigDir, "Create the directory or pick another path with --config."))
 	report.Checks = append(report.Checks, m.checkSymlink())
+	if err := validateTargetSet(m.CanonicalDir, m.ConfigDir, m.targets); err != nil {
+		report.Checks = append(report.Checks, DoctorCheck{
+			Name: "targets", Status: "fail", Detail: err.Error(),
+			Fix: "Edit targets so every path is absolute and does not overlap another target, the canonical store, or the config directory.",
+		})
+	}
 	for _, target := range m.targets {
 		report.Checks = append(report.Checks, m.checkTarget(target))
 	}
@@ -60,6 +66,9 @@ func (m *Manager) Doctor(ctx context.Context) (*DoctorReport, error) {
 }
 
 func (m *Manager) checkWritable(name, dir, fix string) DoctorCheck {
+	if m.dryRun {
+		return DoctorCheck{Name: name, Status: "ok", Detail: "dry-run: " + dir}
+	}
 	probe := filepath.Join(dir, ".doctor-write-"+randHex(2))
 	f, err := os.OpenFile(probe, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -71,6 +80,9 @@ func (m *Manager) checkWritable(name, dir, fix string) DoctorCheck {
 }
 
 func (m *Manager) checkSymlink() DoctorCheck {
+	if m.dryRun {
+		return DoctorCheck{Name: "symlink", Status: "ok", Detail: "dry-run: symlink creation was not probed"}
+	}
 	dir, err := os.MkdirTemp(m.ConfigDir, "symlink-check-")
 	if err != nil {
 		return DoctorCheck{Name: "symlink", Status: "fail", Detail: err.Error()}
@@ -96,6 +108,9 @@ func (m *Manager) checkTarget(target Target) DoctorCheck {
 	expanded, err := ExpandPath(target.Path)
 	if err != nil {
 		return DoctorCheck{Name: name, Status: "fail", Detail: err.Error(), Fix: "Edit the target path in settings or targets.json."}
+	}
+	if !filepath.IsAbs(expanded) {
+		return DoctorCheck{Name: name, Status: "fail", Detail: expanded + " is not an absolute path", Fix: "Set an absolute path in targets.json."}
 	}
 	info, err := os.Lstat(expanded)
 	if err != nil {

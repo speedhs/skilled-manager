@@ -173,6 +173,23 @@ func TestConflictAndPartial(t *testing.T) {
 	}
 }
 
+func TestDryRunListCreatesNothing(t *testing.T) {
+	root := t.TempDir()
+	canon := filepath.Join(root, "skills")
+	cfg := filepath.Join(root, "config")
+	code, stdout, stderr := run(t, []string{"--dry-run", "--canonical", canon, "--config", cfg, "list"})
+	if code != ExitOK {
+		t.Fatalf("list: %d %s %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "No skills") {
+		t.Fatalf("stdout: %s", stdout)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("dry-run list wrote %v %v", entries, err)
+	}
+}
+
 func run(t *testing.T, args []string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer

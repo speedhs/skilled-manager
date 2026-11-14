@@ -38,6 +38,7 @@ type Manager struct {
 	logger       *slog.Logger
 	dryRun       bool
 	warnings     []string
+	notes        []string
 }
 
 // Option configures NewManager.
@@ -105,11 +106,14 @@ func NewManager(opts ...Option) (*Manager, error) {
 	}
 	m.TargetsPath = filepath.Join(m.ConfigDir, TargetsFilename)
 	m.StatePath = filepath.Join(m.ConfigDir, StateFilename)
-	if err := os.MkdirAll(m.CanonicalDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create canonical dir: %w", err)
-	}
-	if err := os.MkdirAll(m.ConfigDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create config dir: %w", err)
+	// A dry run must not create the store, the config directory, or targets.json.
+	if !m.dryRun {
+		if err := os.MkdirAll(m.CanonicalDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create canonical dir: %w", err)
+		}
+		if err := os.MkdirAll(m.ConfigDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create config dir: %w", err)
+		}
 	}
 	if err := m.reloadLocked(); err != nil {
 		return nil, err
@@ -141,6 +145,16 @@ func (m *Manager) Warnings() []string {
 	return out
 }
 
+// Notes returns messages recorded by later operations, such as a TOML import
+// that kept the original file as a backup. The list is not cleared.
+func (m *Manager) Notes() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.notes))
+	copy(out, m.notes)
+	return out
+}
+
 // DryRun reports whether mutating methods will avoid writing.
 func (m *Manager) DryRun() bool {
 	return m.dryRun
@@ -154,6 +168,21 @@ func (m *Manager) Reload() error {
 }
 
 func (m *Manager) reloadLocked() error {
+	if m.dryRun {
+		if _, err := os.Lstat(m.TargetsPath); errors.Is(err, os.ErrNotExist) {
+			m.targets = DefaultTargets()
+			state, warning, err := LoadState(m.StatePath)
+			if err != nil {
+				return err
+			}
+			m.state = state
+			m.warnings = nil
+			if warning != "" {
+				m.warnings = []string{warning}
+			}
+			return nil
+		}
+	}
 	targets, warnings, err := LoadTargets(m.TargetsPath)
 	if err != nil {
 		return err
@@ -200,10 +229,8 @@ func (m *Manager) targetByID(id string) (Target, bool) {
 // UpdateTargets validates, saves, and stores targets.
 func (m *Manager) UpdateTargets(targets []Target) error {
 	return m.mutate(context.Background(), func() error {
-		for i := range targets {
-			if err := ValidateTarget(targets[i]); err != nil {
-				return err
-			}
+		if err := validateTargetSet(m.CanonicalDir, m.ConfigDir, targets); err != nil {
+			return err
 		}
 		if m.dryRun {
 			return nil
@@ -245,14 +272,41 @@ func (m *Manager) mutate(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// The lock is held, so the files on disk are the latest committed
+	// ledger. Reloading drops in-memory state from before this call and
+	// keeps a second process from having its records overwritten.
+	if err := m.reloadLocked(); err != nil {
+		return err
+	}
 	return fn()
 }
 
 func (m *Manager) acquireLock() (func(), error) {
+	lockPath := filepath.Join(m.ConfigDir, "manager.lock")
+	if m.dryRun {
+		f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return func() {}, nil
+			}
+			return nil, err
+		}
+		if err := lockFile(f); err != nil {
+			_ = f.Close()
+			if errors.Is(err, ErrLocked) {
+				return nil, ErrLocked
+			}
+			return nil, err
+		}
+		return func() {
+			_ = unlockFile(f)
+			_ = f.Close()
+		}, nil
+	}
 	if err := os.MkdirAll(m.ConfigDir, 0o755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(m.ConfigDir, "manager.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}

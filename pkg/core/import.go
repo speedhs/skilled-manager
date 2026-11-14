@@ -165,6 +165,9 @@ func (m *Manager) importLocked(ctx context.Context, c ImportCandidate) error {
 	if !ok {
 		return fmt.Errorf("%w: target %q", ErrNotFound, c.TargetID)
 	}
+	if err := m.rejectUnsafeTarget(target); err != nil {
+		return err
+	}
 	root, err := ExpandPath(target.Path)
 	if err != nil {
 		return err
@@ -211,12 +214,26 @@ func (m *Manager) importToml(ctx context.Context, c ImportCandidate, src, dest s
 	if err != nil {
 		return err
 	}
+	generated, err := SkillToGeminiTOML(*skill)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
 	if err := writeAtomic(filepath.Join(dest, "SKILL.md"), []byte(skill.Content), 0o644); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
+	}
+	// The generated command drops comments and unknown keys. Keep the original
+	// bytes in the backup store before the source file is replaced.
+	if generated != string(body) {
+		id, err := m.backupLocked(c.TargetID, c.SkillName, src)
+		if err != nil {
+			_ = os.RemoveAll(dest)
+			return fmt.Errorf("refusing to replace %s without a backup of the original TOML: %w", src, err)
+		}
+		m.notes = append(m.notes, fmt.Sprintf("imported %s from TOML; original file kept as backup %s because comments and unknown keys are not stored in SKILL.md", c.SkillName, id))
 	}
 	bak := src + ".import-bak-" + randHex(3)
 	if err := os.Rename(src, bak); err != nil {

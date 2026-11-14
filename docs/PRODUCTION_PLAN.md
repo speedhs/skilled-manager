@@ -24,7 +24,7 @@ Ordered work. Each item is done when its acceptance criteria hold and `go test -
 ## Phase 1 — safety
 
 - `ValidateSkillName` on every name that becomes a path. Reject separators, `..`, absolute paths, Windows reserved names, trailing dots/spaces, NFKC lookalikes, and case-collisions with an existing folder.
-- Delete only a symlink whose cleaned target is the canonical skill, or a non-symlink whose `state.json` identity matches. Open with `O_NOFOLLOW` and compare inode before unlinking. Never walk a symlink or junction.
+- Delete only a symlink whose cleaned target is the canonical skill, or a non-symlink whose recorded content hash matches and, when an inode was stored, whose inode still matches. Open with `O_NOFOLLOW` and compare inode before unlinking. Never walk a symlink or junction. Do not delete a copy whose bytes changed. Do not delete a deployment when its backup cannot be kept.
 - Create with `O_EXCL` / `os.Symlink` failure. Do not delete first.
 - Zip export and import: reject zip-slip, symlink entries, absolute names, odd modes, and bombs (count, uncompressed size, ratio).
 - Import copies to a staging directory, links back, then removes the source. Any failure restores the source and removes the staging copy.

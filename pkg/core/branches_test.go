@@ -247,11 +247,12 @@ func TestSyncReportsTargetErrors(t *testing.T) {
 	if _, err := CreateSkill(canonical, "sync-skill", "Sync", "# Sync"); err != nil {
 		t.Fatal(err)
 	}
-	mgr.mu.Lock()
-	mgr.targets = append(mgr.targets, Target{
+	targets := append(mgr.GetTargets(), Target{
 		ID: "bad", Label: "Bad", Path: "$SKILLS_MISSING", Mode: ModeSymlink, Format: FormatSkill,
 	})
-	mgr.mu.Unlock()
+	if err := SaveTargets(mgr.TargetsPath, targets); err != nil {
+		t.Fatal(err)
+	}
 	report, err := mgr.Sync(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -482,6 +482,7 @@ func (a *app) importCmd(m *core.Manager, args []string) int {
 			"schema_version": core.JSONSchemaVersion,
 			"imported":       imported,
 			"errors":         messages,
+			"notes":          m.Notes(),
 		}) != ExitOK {
 			return ExitError
 		}
@@ -491,6 +492,9 @@ func (a *app) importCmd(m *core.Manager, args []string) int {
 		}
 		for _, err := range errs {
 			fmt.Fprintf(a.stderr, "error: %v\n", err)
+		}
+		for _, note := range m.Notes() {
+			fmt.Fprintf(a.stderr, "warning: %s\n", note)
 		}
 	}
 	return summarize(len(imported), errs)
