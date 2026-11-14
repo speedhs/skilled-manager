@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -9,7 +11,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/internal/version"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 // SkillsApp encapsulates the Fyne desktop application.
@@ -24,13 +27,23 @@ type SkillsApp struct {
 	toolbar       *AppToolbar
 	statusLabel   *widget.Label
 	skills        []core.Skill
+	refreshGen    atomic.Uint64
 }
 
 // NewSkillsApp initializes the desktop application.
 func NewSkillsApp(mgr *core.Manager) (*SkillsApp, error) {
 	a := app.NewWithID("com.agent.skillsmanager")
+	applyTheme(a, a.Preferences().StringWithFallback("theme", "system"))
 	win := a.NewWindow("Skills Manager - AI Agent Skill Orchestrator")
-	win.Resize(fyne.NewSize(1100, 720))
+	width := a.Preferences().FloatWithFallback("win_w", 1100)
+	height := a.Preferences().FloatWithFallback("win_h", 720)
+	if width < 640 {
+		width = 1100
+	}
+	if height < 480 {
+		height = 720
+	}
+	win.Resize(fyne.NewSize(float32(width), float32(height)))
 
 	sa := &SkillsApp{
 		fyneApp: a,
@@ -43,6 +56,7 @@ func NewSkillsApp(mgr *core.Manager) (*SkillsApp, error) {
 
 	// Skill list pane (left)
 	sa.skillListPane = NewSkillListPane(func(skill core.Skill) {
+		a.Preferences().SetString("last_skill", skill.Name)
 		sa.editorPane.LoadSkill(&skill)
 	})
 
@@ -105,6 +119,27 @@ func NewSkillsApp(mgr *core.Manager) (*SkillsApp, error) {
 	)
 
 	win.SetContent(rootContent)
+	win.SetMainMenu(fyne.NewMainMenu(
+		fyne.NewMenu("View",
+			fyne.NewMenuItem("System theme", func() {
+				a.Preferences().SetString("theme", "system")
+				applyTheme(a, "system")
+			}),
+			fyne.NewMenuItem("Light", func() {
+				a.Preferences().SetString("theme", "light")
+				applyTheme(a, "light")
+			}),
+			fyne.NewMenuItem("Dark", func() {
+				a.Preferences().SetString("theme", "dark")
+				applyTheme(a, "dark")
+			}),
+		),
+		fyne.NewMenu("Help",
+			fyne.NewMenuItem("About", func() {
+				dialog.ShowInformation("About Skills Manager", version.String()+"\n\nThis build is unsigned until release signing certificates are configured.\n\nSkills Manager never executes scripts inside a skill folder.", win)
+			}),
+		),
+	))
 
 	// Initialize File Watcher with debouncing
 	watcher, err := core.NewFileWatcher(mgr, 250*time.Millisecond)
@@ -114,6 +149,12 @@ func NewSkillsApp(mgr *core.Manager) (*SkillsApp, error) {
 	}
 
 	win.SetOnClosed(func() {
+		size := win.Canvas().Size()
+		a.Preferences().SetFloat("win_w", float64(size.Width))
+		a.Preferences().SetFloat("win_h", float64(size.Height))
+		if sel := sa.skillListPane.GetSelectedSkill(); sel != nil {
+			a.Preferences().SetString("last_skill", sel.Name)
+		}
 		if sa.watcher != nil {
 			_ = sa.watcher.Close()
 		}
@@ -130,43 +171,70 @@ func (sa *SkillsApp) Run() {
 }
 
 // Refresh reloads state and skills from disk and updates all panes.
+// Disk work runs off the UI thread. A newer refresh supersedes an older one.
 func (sa *SkillsApp) Refresh() {
-	if err := sa.mgr.Reload(); err != nil {
-		dialog.ShowError(fmt.Errorf("failed to reload targets/state: %w", err), sa.window)
-		return
-	}
-
-	skills, err := core.ListSkills(sa.mgr.CanonicalDir)
-	if err != nil {
-		dialog.ShowError(fmt.Errorf("failed to list canonical skills: %w", err), sa.window)
-		return
-	}
-	sa.skills = skills
-
-	// Update list
-	selectedName := ""
-	if sel := sa.skillListPane.GetSelectedSkill(); sel != nil {
-		selectedName = sel.Name
-	}
-
-	sa.skillListPane.SetSkills(skills)
-	sa.matrixPane.SetData(skills, sa.mgr.GetTargets())
-
-	// Restore or set editor selection
-	if selectedName != "" {
-		sa.skillListPane.SelectSkillByName(selectedName)
-	} else if len(skills) > 0 {
-		sa.skillListPane.SelectSkillByName(skills[0].Name)
-	} else {
-		sa.editorPane.LoadSkill(nil)
-	}
-
-	sa.statusLabel.SetText(fmt.Sprintf("Canonical Store: %s | %d skills | Targets: %d",
-		sa.mgr.CanonicalDir, len(skills), len(sa.mgr.GetTargets())))
-
-	if sa.watcher != nil {
-		sa.watcher.RefreshPaths()
-	}
+	gen := sa.refreshGen.Add(1)
+	sa.statusLabel.SetText("Refreshing…")
+	go func() {
+		err := sa.mgr.Reload()
+		var skills []core.Skill
+		statuses := map[string]core.CellStatus{}
+		if err == nil {
+			skills, err = core.ListSkills(sa.mgr.CanonicalDir)
+		}
+		if err == nil {
+			for _, skill := range skills {
+				for _, target := range sa.mgr.GetTargets() {
+					st, stErr := sa.mgr.Status(context.Background(), skill.Name, target.ID)
+					if stErr != nil {
+						st = core.CellStatus{Code: core.StatusBroken, Message: stErr.Error()}
+					}
+					statuses[skill.Name+"\x00"+target.ID] = st
+				}
+			}
+		}
+		fyne.Do(func() {
+			if gen != sa.refreshGen.Load() {
+				return
+			}
+			if err != nil {
+				showError(fmt.Errorf("failed to refresh: %w", err), sa.window)
+				return
+			}
+			sa.skills = skills
+			selectedName := ""
+			if sel := sa.skillListPane.GetSelectedSkill(); sel != nil {
+				selectedName = sel.Name
+			}
+			sa.skillListPane.SetSkills(skills)
+			sa.matrixPane.SetStatuses(statuses)
+			sa.matrixPane.SetData(skills, sa.mgr.GetTargets())
+			if selectedName == "" {
+				selectedName = sa.fyneApp.Preferences().String("last_skill")
+			}
+			var match *core.Skill
+			for i := range skills {
+				if skills[i].Name == selectedName {
+					match = &skills[i]
+					break
+				}
+			}
+			if match == nil && selectedName == "" && len(skills) > 0 && !sa.editorPane.Dirty() {
+				match = &skills[0]
+			}
+			if match != nil {
+				sa.editorPane.LoadSkill(match)
+				sa.skillListPane.SelectSkillByName(match.Name)
+			} else if len(skills) == 0 {
+				sa.editorPane.LoadSkill(nil)
+			}
+			sa.statusLabel.SetText(fmt.Sprintf("Canonical Store: %s | %d skills | Targets: %d",
+				sa.mgr.CanonicalDir, len(skills), len(sa.mgr.GetTargets())))
+			if sa.watcher != nil {
+				sa.watcher.RefreshPaths()
+			}
+		})
+	}()
 }
 
 func (sa *SkillsApp) watchLoop() {

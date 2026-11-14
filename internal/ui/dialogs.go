@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 // ShowNewSkillDialog opens a modal dialog to create a new skill in canonical store.
@@ -46,27 +47,30 @@ func ShowNewSkillDialog(mgr *core.Manager, win fyne.Window, onSuccess func(skill
 			body := strings.TrimSpace(bodyEntry.Text)
 
 			if name == "" {
-				dialog.ShowError(fmt.Errorf("skill name cannot be empty"), win)
+				showError(fmt.Errorf("skill name cannot be empty"), win)
 				return
 			}
 			if desc == "" {
-				dialog.ShowError(fmt.Errorf("skill description cannot be empty"), win)
+				showError(fmt.Errorf("skill description cannot be empty"), win)
 				return
 			}
 			if body == "" {
 				body = fmt.Sprintf("# %s\n\nProvide agent instructions here.\n", name)
 			}
 
-			skill, err := core.CreateSkill(mgr.CanonicalDir, name, desc, body)
-			if err != nil {
-				dialog.ShowError(err, win)
-				return
-			}
-
-			dialog.ShowInformation("Skill Created", fmt.Sprintf("Created skill %q at %s", skill.Name, skill.Path), win)
-			if onSuccess != nil {
-				onSuccess(skill)
-			}
+			go func() {
+				skill, err := core.CreateSkill(mgr.CanonicalDir, name, desc, body)
+				fyne.Do(func() {
+					if err != nil {
+						showError(err, win)
+						return
+					}
+					dialog.ShowInformation("Skill Created", fmt.Sprintf("Created skill %q at %s", skill.Name, skill.Path), win)
+					if onSuccess != nil {
+						onSuccess(skill)
+					}
+				})
+			}()
 		},
 		win,
 	)
@@ -75,11 +79,19 @@ func ShowNewSkillDialog(mgr *core.Manager, win fyne.Window, onSuccess func(skill
 	d.Show()
 }
 
-// ShowImportDialog opens a modal to scan and import existing untracked skills.
+// ShowImportDialog scans target directories off the UI thread, then opens the picker.
 func ShowImportDialog(mgr *core.Manager, win fyne.Window, onComplete func()) {
-	candidates, err := mgr.ScanImportCandidates()
+	go func() {
+		candidates, err := mgr.ScanImportCandidates(context.Background())
+		fyne.Do(func() {
+			presentImportDialog(mgr, win, onComplete, candidates, err)
+		})
+	}()
+}
+
+func presentImportDialog(mgr *core.Manager, win fyne.Window, onComplete func(), candidates []core.ImportCandidate, err error) {
 	if err != nil {
-		dialog.ShowError(fmt.Errorf("failed to scan for skills: %w", err), win)
+		showError(fmt.Errorf("failed to scan for skills: %w", err), win)
 		return
 	}
 
@@ -139,22 +151,25 @@ func ShowImportDialog(mgr *core.Manager, win fyne.Window, onComplete func()) {
 				return
 			}
 
-			imported, errs := mgr.ImportSelected(selected)
-			msg := fmt.Sprintf("Imported %d skill(s) into canonical store:\n", len(imported))
-			for _, name := range imported {
-				msg += fmt.Sprintf("- %s\n", name)
-			}
-			if len(errs) > 0 {
-				msg += "\nErrors:\n"
-				for _, e := range errs {
-					msg += fmt.Sprintf("[Error] %v\n", e)
-				}
-			}
-
-			dialog.ShowInformation("Import Results", msg, win)
-			if onComplete != nil {
-				onComplete()
-			}
+			go func() {
+				imported, errs := mgr.ImportSelected(context.Background(), selected)
+				fyne.Do(func() {
+					msg := fmt.Sprintf("Imported %d skill(s) into canonical store:\n", len(imported))
+					for _, name := range imported {
+						msg += fmt.Sprintf("- %s\n", name)
+					}
+					if len(errs) > 0 {
+						msg += "\nErrors:\n"
+						for _, e := range errs {
+							msg += fmt.Sprintf("[Error] %v\n", e)
+						}
+					}
+					dialog.ShowInformation("Import Results", msg, win)
+					if onComplete != nil {
+						onComplete()
+					}
+				})
+			}()
 		},
 		win,
 	)
@@ -168,10 +183,10 @@ func ShowSettingsDialog(mgr *core.Manager, win fyne.Window, onSaved func()) {
 	targets := mgr.GetTargets()
 
 	type targetForm struct {
-		idEntry     *widget.Entry
-		labelEntry  *widget.Entry
-		pathEntry   *widget.Entry
-		modeSelect  *widget.Select
+		idEntry      *widget.Entry
+		labelEntry   *widget.Entry
+		pathEntry    *widget.Entry
+		modeSelect   *widget.Select
 		formatSelect *widget.Select
 	}
 
@@ -190,6 +205,17 @@ func ShowSettingsDialog(mgr *core.Manager, win fyne.Window, onSaved func()) {
 
 			p := widget.NewEntry()
 			p.SetText(t.Path)
+			expanded := widget.NewLabel("")
+			refreshExpanded := func(path string) {
+				got, err := core.ExpandPath(strings.TrimSpace(path))
+				if err != nil {
+					expanded.SetText("Does not expand: " + err.Error())
+					return
+				}
+				expanded.SetText("Effective path: " + got)
+			}
+			refreshExpanded(t.Path)
+			p.OnChanged = refreshExpanded
 
 			mode := widget.NewSelect([]string{core.ModeSymlink, core.ModeCopy}, nil)
 			mode.SetSelected(t.Mode)
@@ -198,10 +224,10 @@ func ShowSettingsDialog(mgr *core.Manager, win fyne.Window, onSaved func()) {
 			format.SetSelected(t.Format)
 
 			tf := &targetForm{
-				idEntry:     id,
-				labelEntry:  lbl,
-				pathEntry:   p,
-				modeSelect:  mode,
+				idEntry:      id,
+				labelEntry:   lbl,
+				pathEntry:    p,
+				modeSelect:   mode,
 				formatSelect: format,
 			}
 			if idx < len(forms) {
@@ -217,16 +243,21 @@ func ShowSettingsDialog(mgr *core.Manager, win fyne.Window, onSaved func()) {
 					// re-render
 					listContainer.Refresh()
 				} else {
-					dialog.ShowError(fmt.Errorf("at least one target must remain configured"), win)
+					showError(fmt.Errorf("at least one target must remain configured"), win)
 				}
 			})
 			removeBtn.Importance = widget.DangerImportance
 
-			card := widget.NewCard(fmt.Sprintf("Target #%d: %s", idx+1, t.Label), "", container.NewVBox(
+			note := ""
+			if t.Builtin {
+				note = "Built-in target. Changing the path does not change the upstream default for new installs."
+			}
+			card := widget.NewCard(fmt.Sprintf("Target #%d: %s", idx+1, t.Label), note, container.NewVBox(
 				widget.NewForm(
 					widget.NewFormItem("ID", id),
 					widget.NewFormItem("Label", lbl),
 					widget.NewFormItem("Path", p),
+					widget.NewFormItem("", expanded),
 					widget.NewFormItem("Mode", mode),
 					widget.NewFormItem("Format", format),
 				),
@@ -289,28 +320,36 @@ func ShowSettingsDialog(mgr *core.Manager, win fyne.Window, onSaved func()) {
 				f := tf.formatSelect.Selected
 
 				if id == "" || p == "" {
-					dialog.ShowError(fmt.Errorf("target ID and Path cannot be empty"), win)
+					showError(fmt.Errorf("target ID and Path cannot be empty"), win)
 					return
 				}
-
-				newTargets = append(newTargets, core.Target{
+				candidate := core.Target{
 					ID:     id,
 					Label:  lbl,
 					Path:   p,
 					Mode:   m,
 					Format: f,
+				}
+				if err := core.ValidateTarget(candidate); err != nil {
+					showError(err, win)
+					return
+				}
+				newTargets = append(newTargets, candidate)
+			}
+
+			go func() {
+				err := mgr.UpdateTargets(newTargets)
+				fyne.Do(func() {
+					if err != nil {
+						showError(fmt.Errorf("failed to save targets: %w", err), win)
+						return
+					}
+					dialog.ShowInformation("Saved", "Target configurations updated successfully.", win)
+					if onSaved != nil {
+						onSaved()
+					}
 				})
-			}
-
-			if err := mgr.UpdateTargets(newTargets); err != nil {
-				dialog.ShowError(fmt.Errorf("failed to save targets: %w", err), win)
-				return
-			}
-
-			dialog.ShowInformation("Saved", "Target configurations updated successfully.", win)
-			if onSaved != nil {
-				onSaved()
-			}
+			}()
 		},
 		win,
 	)
@@ -321,9 +360,52 @@ func ShowSettingsDialog(mgr *core.Manager, win fyne.Window, onSaved func()) {
 
 // ShowSyncReportDialog performs synchronization and displays a detailed report dialog.
 func ShowSyncReportDialog(mgr *core.Manager, win fyne.Window, onDone func()) {
-	report, err := mgr.Sync()
+	dialog.ShowConfirm("Sync deployments", "Update deployments whose canonical skill changed and whose deployed bytes did not. Conflicts are left untouched.", func(ok bool) {
+		if !ok {
+			return
+		}
+		go func() {
+			report, err := mgr.Sync(context.Background())
+			fyne.Do(func() {
+				showSyncReport(report, err, win, onDone)
+			})
+		}()
+	}, win)
+}
+
+// ShowDoctorDialog runs doctor off the UI thread and shows every check.
+func ShowDoctorDialog(mgr *core.Manager, win fyne.Window) {
+	go func() {
+		report, err := mgr.Doctor(context.Background())
+		fyne.Do(func() {
+			if err != nil {
+				showError(err, win)
+				return
+			}
+			var b strings.Builder
+			for _, check := range report.Checks {
+				fmt.Fprintf(&b, "%s: %s\n%s\n", check.Name, check.Status, check.Detail)
+				if check.Fix != "" {
+					fmt.Fprintf(&b, "Fix: %s\n", check.Fix)
+				}
+				b.WriteString("\n")
+			}
+			for _, warning := range report.Warnings {
+				fmt.Fprintf(&b, "Warning: %s\n", warning)
+			}
+			entry := widget.NewMultiLineEntry()
+			entry.SetText(b.String())
+			entry.Disable()
+			d := dialog.NewCustom("Doctor", "Close", container.NewScroll(entry), win)
+			d.Resize(fyne.NewSize(640, 420))
+			d.Show()
+		})
+	}()
+}
+
+func showSyncReport(report *core.SyncReport, err error, win fyne.Window, onDone func()) {
 	if err != nil {
-		dialog.ShowError(fmt.Errorf("sync failed: %w", err), win)
+		showError(fmt.Errorf("sync failed: %w", err), win)
 		return
 	}
 
@@ -365,7 +447,11 @@ func ShowSyncReportDialog(mgr *core.Manager, win fyne.Window, onDone func()) {
 
 // ShowExportZipDialog prompts the user and exports canonical skills as a ZIP file.
 func ShowExportZipDialog(mgr *core.Manager, win fyne.Window) {
-	defaultPath := filepath.Join(core.ExpandPath("~"), "agent-skills.zip")
+	home, err := core.ExpandPath("~")
+	if err != nil {
+		home = "."
+	}
+	defaultPath := filepath.Join(home, "agent-skills.zip")
 	pathEntry := widget.NewEntry()
 	pathEntry.SetText(defaultPath)
 
@@ -383,25 +469,32 @@ func ShowExportZipDialog(mgr *core.Manager, win fyne.Window) {
 				return
 			}
 
-			outPath := core.ExpandPath(strings.TrimSpace(pathEntry.Text))
-			if outPath == "" {
-				dialog.ShowError(fmt.Errorf("output path cannot be empty"), win)
+			outPath, err := core.ExpandPath(strings.TrimSpace(pathEntry.Text))
+			if err != nil || outPath == "" {
+				showError(fmt.Errorf("output path is empty or did not expand: %w", err), win)
 				return
 			}
-
-			f, err := os.Create(outPath)
-			if err != nil {
-				dialog.ShowError(fmt.Errorf("failed to create zip file: %w", err), win)
-				return
-			}
-			defer f.Close()
-
-			if err := mgr.ExportZip(nil, f); err != nil {
-				dialog.ShowError(fmt.Errorf("failed to export zip: %w", err), win)
-				return
-			}
-
-			dialog.ShowInformation("Export Succeeded", fmt.Sprintf("Exported all canonical skills to:\n%s", outPath), win)
+			go func() {
+				f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+				if err != nil {
+					fyne.Do(func() {
+						showError(fmt.Errorf("failed to create zip file: %w", err), win)
+					})
+					return
+				}
+				exportErr := mgr.ExportZip(context.Background(), nil, f)
+				_ = f.Close()
+				if exportErr != nil {
+					_ = os.Remove(outPath)
+				}
+				fyne.Do(func() {
+					if exportErr != nil {
+						showError(fmt.Errorf("failed to export zip: %w", exportErr), win)
+						return
+					}
+					dialog.ShowInformation("Export Succeeded", fmt.Sprintf("Exported all canonical skills to:\n%s", outPath), win)
+				})
+			}()
 		},
 		win,
 	)

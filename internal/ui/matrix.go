@@ -1,25 +1,29 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
-// MatrixPane renders the matrix of skills x tools.
+// MatrixPane renders skills × tools in a virtualized table.
+// Each cell's text is the status, so the state is not conveyed by color alone.
 type MatrixPane struct {
 	mgr       *core.Manager
 	window    fyne.Window
 	container *fyne.Container
 	content   *fyne.Container
+	table     *widget.Table
 	skills    []core.Skill
 	targets   []core.Target
+	statuses  map[string]core.CellStatus
 	onUpdate  func()
+	busy      bool
 }
 
 // NewMatrixPane creates a new MatrixPane.
@@ -28,155 +32,174 @@ func NewMatrixPane(mgr *core.Manager, win fyne.Window, onUpdate func()) *MatrixP
 		mgr:      mgr,
 		window:   win,
 		onUpdate: onUpdate,
+		statuses: map[string]core.CellStatus{},
 	}
-
-	mp.content = container.NewVBox()
-	scroll := container.NewScroll(mp.content)
-
+	mp.table = widget.NewTable(
+		func() (int, int) {
+			rows := len(mp.skills)
+			if rows == 0 {
+				rows = 1
+			}
+			return rows + 1, len(mp.targets) + 1
+		},
+		func() fyne.CanvasObject {
+			btn := widget.NewButton(" ", nil)
+			btn.Alignment = widget.ButtonAlignLeading
+			return btn
+		},
+		func(id widget.TableCellID, obj fyne.CanvasObject) {
+			btn := obj.(*widget.Button)
+			btn.Enable()
+			btn.Importance = widget.MediumImportance
+			btn.OnTapped = nil
+			mp.paintCell(id, btn)
+		},
+	)
+	mp.table.SetColumnWidth(0, 200)
+	mp.table.OnSelected = func(id widget.TableCellID) {
+		mp.table.Unselect(id)
+		if mp.busy || id.Row == 0 || id.Col == 0 {
+			return
+		}
+		if id.Row-1 >= len(mp.skills) || id.Col-1 >= len(mp.targets) {
+			return
+		}
+		skill := mp.skills[id.Row-1]
+		target := mp.targets[id.Col-1]
+		mp.onCell(skill, target, mp.statusFor(skill.Name, target.ID))
+	}
 	header := container.NewVBox(
 		widget.NewLabelWithStyle("Tool Deployment Matrix", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Click a cell checkbox to toggle skill enablement. Hover or click ℹ for status details."),
+		widget.NewLabel("Select a cell to enable or disable that skill. The label is the status."),
 	)
-
-	mp.container = container.NewBorder(header, nil, nil, nil, scroll)
+	mp.content = container.NewStack(mp.table)
+	mp.container = container.NewBorder(header, nil, nil, nil, mp.content)
 	return mp
+}
+
+func matrixKey(skill, target string) string {
+	return skill + "\x00" + target
 }
 
 // SetData updates the skills and targets displayed in the matrix.
 func (mp *MatrixPane) SetData(skills []core.Skill, targets []core.Target) {
 	mp.skills = skills
 	mp.targets = targets
-	mp.Render()
+	for i := range targets {
+		mp.table.SetColumnWidth(i+1, 150)
+	}
+	mp.table.Refresh()
 }
 
-// Render rebuilds the matrix view.
-func (mp *MatrixPane) Render() {
-	mp.content.Objects = nil
+// SetStatuses stores statuses computed off the UI thread.
+func (mp *MatrixPane) SetStatuses(statuses map[string]core.CellStatus) {
+	if statuses == nil {
+		statuses = map[string]core.CellStatus{}
+	}
+	mp.statuses = statuses
+	mp.table.Refresh()
+}
 
-	if len(mp.skills) == 0 {
-		emptyCard := widget.NewCard("", "", container.NewCenter(
-			widget.NewLabel("No skills in canonical store. Click 'New Skill' or 'Import Existing' to begin."),
-		))
-		mp.content.Add(emptyCard)
-		mp.content.Refresh()
+func (mp *MatrixPane) statusFor(skill, target string) core.CellStatus {
+	if st, ok := mp.statuses[matrixKey(skill, target)]; ok {
+		return st
+	}
+	st, err := mp.mgr.Status(context.Background(), skill, target)
+	if err != nil {
+		return core.CellStatus{Code: core.StatusBroken, Message: err.Error()}
+	}
+	return st
+}
+
+func (mp *MatrixPane) paintCell(id widget.TableCellID, btn *widget.Button) {
+	if id.Row == 0 {
+		if id.Col == 0 {
+			btn.SetText("Skill")
+		} else if id.Col-1 < len(mp.targets) {
+			target := mp.targets[id.Col-1]
+			btn.SetText(target.Label)
+		} else {
+			btn.SetText("")
+		}
+		btn.Disable()
 		return
 	}
-
-	// Build Header Row
-	headerRow := container.NewHBox()
-	skillColHeader := widget.NewLabelWithStyle("Skill", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	skillColContainer := container.NewHBox(skillColHeader)
-	// Reserve fixed width for skill column
-	skillColContainer.Resize(fyne.NewSize(200, 36))
-	headerRow.Add(container.NewGridWrap(fyne.NewSize(200, 36), skillColHeader))
-
-	for _, target := range mp.targets {
-		modeStr := target.Mode
-		if target.Format == core.FormatGeminiTOML {
-			modeStr = "gemini-toml"
+	if len(mp.skills) == 0 {
+		if id.Col == 0 {
+			btn.SetText("No skills yet")
+		} else {
+			btn.SetText("")
 		}
-		lbl := fmt.Sprintf("%s\n(%s)", target.Label, modeStr)
-		targetHeader := widget.NewLabelWithStyle(lbl, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-		headerRow.Add(container.NewGridWrap(fyne.NewSize(160, 48), targetHeader))
+		btn.Disable()
+		return
 	}
-
-	mp.content.Add(headerRow)
-	mp.content.Add(widget.NewSeparator())
-
-	// Build Matrix Rows
-	for _, skill := range mp.skills {
-		rowContainer := container.NewHBox()
-
-		// Skill label
-		skillLabel := widget.NewLabelWithStyle(skill.Name, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-		rowContainer.Add(container.NewGridWrap(fyne.NewSize(200, 42), skillLabel))
-
-		// Target cells
-		for _, target := range mp.targets {
-			cell := mp.buildCell(skill, target)
-			rowContainer.Add(container.NewGridWrap(fyne.NewSize(160, 42), cell))
-		}
-
-		mp.content.Add(rowContainer)
-		mp.content.Add(widget.NewSeparator())
+	skill := mp.skills[id.Row-1]
+	if id.Col == 0 {
+		btn.SetText(skill.Name)
+		btn.Disable()
+		return
 	}
-
-	mp.content.Refresh()
+	if id.Col-1 >= len(mp.targets) {
+		btn.SetText("")
+		btn.Disable()
+		return
+	}
+	target := mp.targets[id.Col-1]
+	st := mp.statusFor(skill.Name, target.ID)
+	btn.SetText(GetStatusLabel(st.Code))
+	if st.Code == core.StatusConflict || mp.busy {
+		btn.Disable()
+	}
 }
 
-// buildCell creates the interactive widget for a (skill, target) cell.
-func (mp *MatrixPane) buildCell(skill core.Skill, target core.Target) fyne.CanvasObject {
-	status, err := mp.mgr.Status(skill.Name, target.ID)
-	if err != nil {
-		status = core.CellStatus{
-			Code:    core.StatusBroken,
-			Message: fmt.Sprintf("Error checking status: %v", err),
+func (mp *MatrixPane) onCell(skill core.Skill, target core.Target, st core.CellStatus) {
+	if st.Code == core.StatusConflict {
+		showError(fmt.Errorf("%s", st.Message), mp.window)
+		return
+	}
+	enable := st.Code == core.StatusDisabled || st.Code == core.StatusBroken
+	title := "Disable " + skill.Name
+	detail := fmt.Sprintf("Remove the deployment of %s on %s.\n\nPath:\n%s\n\n%s\n\nOnly a link or copy this tool recorded is removed.", skill.Name, target.Label, st.ActualPath, st.Message)
+	if enable {
+		title = "Enable " + skill.Name
+		detail = fmt.Sprintf("Deploy %s to %s.\n\nPath:\n%s\n\n%s", skill.Name, target.Label, st.ActualPath, st.Message)
+	}
+	dialog.ShowConfirm(title, detail, func(ok bool) {
+		if !ok {
+			return
 		}
-	}
+		mp.applyToggle(skill.Name, target.ID, enable)
+	}, mp.window)
+}
 
-	// Status indicator dot
-	dot := canvas.NewCircle(GetStatusColor(status.Code))
-	dot.Resize(fyne.NewSize(10, 10))
-	dotContainer := container.NewGridWrap(fyne.NewSize(12, 12), dot)
-
-	// Checkbox
-	isChecked := status.Code == core.StatusEnabled || status.Code == core.StatusDrifted
-	check := widget.NewCheck("", nil)
-	check.Checked = isChecked
-
-	// Disable checkbox if conflict to prevent accidental toggle
-	if status.Code == core.StatusConflict {
-		check.Disable()
-	}
-
-	check.OnChanged = func(wantEnabled bool) {
-		if wantEnabled {
-			res, err := mp.mgr.Enable(skill.Name, target.ID)
-			if err != nil {
-				dialog.ShowError(err, mp.window)
-				check.SetChecked(false)
-				return
-			}
-			if res.Fallback {
-				dialog.ShowInformation("Fallback Mode", res.Message, mp.window)
-			}
+func (mp *MatrixPane) applyToggle(skillName, targetID string, enable bool) {
+	mp.busy = true
+	mp.table.Refresh()
+	go func() {
+		var res *core.EnableResult
+		var err error
+		if enable {
+			res, err = mp.mgr.Enable(context.Background(), skillName, targetID)
 		} else {
-			err := mp.mgr.Disable(skill.Name, target.ID)
+			err = mp.mgr.Disable(context.Background(), skillName, targetID)
+		}
+		fyne.Do(func() {
+			mp.busy = false
 			if err != nil {
-				dialog.ShowError(err, mp.window)
-				check.SetChecked(true)
+				showError(err, mp.window)
+				mp.table.Refresh()
 				return
 			}
-		}
-		if mp.onUpdate != nil {
-			mp.onUpdate()
-		}
-	}
-
-	// Status text
-	statusLbl := widget.NewLabel(GetStatusLabel(status.Code))
-
-	// Info button with tooltip/dialog
-	infoBtn := widget.NewButton("Info", func() {
-		title := fmt.Sprintf("%s on %s", skill.Name, target.Label)
-		msg := fmt.Sprintf("Status: %s\nTarget Path: %s\n\nDetails:\n%s",
-			GetStatusLabel(status.Code),
-			status.ActualPath,
-			status.Message,
-		)
-		if status.IsSymlink && status.LinkTarget != "" {
-			msg += fmt.Sprintf("\n\nSymlink Target: %s", status.LinkTarget)
-		}
-		dialog.ShowInformation(title, msg, mp.window)
-	})
-	infoBtn.Importance = widget.LowImportance
-
-	return container.NewHBox(
-		container.NewCenter(dotContainer),
-		check,
-		statusLbl,
-		infoBtn,
-	)
+			if res != nil && res.Fallback {
+				dialog.ShowInformation("Fallback mode", res.Message, mp.window)
+			}
+			if mp.onUpdate != nil {
+				mp.onUpdate()
+			} else {
+				mp.table.Refresh()
+			}
+		})
+	}()
 }
 
 // Container returns the Fyne canvas object for the matrix.

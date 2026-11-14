@@ -2,11 +2,12 @@ package ui
 
 import (
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 // SkillListPane manages the left-side searchable skill list.
@@ -18,6 +19,7 @@ type SkillListPane struct {
 	filteredSkills []core.Skill
 	selectedIndex  int
 	onSelect       func(skill core.Skill)
+	searchTimer    *time.Timer
 }
 
 // NewSkillListPane creates a new searchable skill list pane.
@@ -32,7 +34,14 @@ func NewSkillListPane(onSelect func(skill core.Skill)) *SkillListPane {
 	pane.searchEntry = widget.NewEntry()
 	pane.searchEntry.SetPlaceHolder("Search skills...")
 	pane.searchEntry.OnChanged = func(query string) {
-		pane.filter(query)
+		if pane.searchTimer != nil {
+			pane.searchTimer.Stop()
+		}
+		pane.searchTimer = time.AfterFunc(200*time.Millisecond, func() {
+			fyne.Do(func() {
+				pane.filter(query)
+			})
+		})
 	}
 
 	pane.list = widget.NewList(

@@ -3,15 +3,15 @@ package ui
 import (
 	"image/color"
 
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 var (
-	ColorEnabled  = color.NRGBA{R: 34, G: 197, B: 94, A: 255}  // Green
+	ColorEnabled  = color.NRGBA{R: 34, G: 197, B: 94, A: 255}   // Green
 	ColorDisabled = color.NRGBA{R: 148, G: 163, B: 184, A: 255} // Slate/Gray
-	ColorConflict = color.NRGBA{R: 239, G: 68, B: 68, A: 255}  // Red
+	ColorConflict = color.NRGBA{R: 239, G: 68, B: 68, A: 255}   // Red
 	ColorDrifted  = color.NRGBA{R: 234, G: 179, B: 8, A: 255}   // Amber/Yellow
-	ColorBroken   = color.NRGBA{R: 168, G: 85, B: 247, A: 255} // Purple
+	ColorBroken   = color.NRGBA{R: 168, G: 85, B: 247, A: 255}  // Purple
 )
 
 // GetStatusColor returns the badge color for a given status code.

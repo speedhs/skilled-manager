@@ -5,7 +5,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 // AppToolbar creates the main top toolbar for the application.
@@ -50,6 +50,10 @@ func NewAppToolbar(
 		}
 	})
 
+	doctorBtn := widget.NewButton("Doctor", func() {
+		ShowDoctorDialog(mgr, win)
+	})
+
 	buttons := container.NewHBox(
 		newBtn,
 		importBtn,
@@ -57,6 +61,7 @@ func NewAppToolbar(
 		exportBtn,
 		widget.NewSeparator(),
 		settingsBtn,
+		doctorBtn,
 		refreshBtn,
 	)
 

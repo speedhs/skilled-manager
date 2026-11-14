@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 // EditorPane provides a multi-line markdown editor for SKILL.md with frontmatter validation.
@@ -20,7 +20,21 @@ type EditorPane struct {
 	entry           *widget.Entry
 	saveBtn         *widget.Button
 	currentSkill    *core.Skill
+	saved           string
+	dirty           bool
 	onSaved         func()
+	prompting       bool
+}
+
+// Dirty reports unsaved editor text.
+func (ep *EditorPane) Dirty() bool { return ep.dirty }
+
+// SkillName is the skill currently open in the editor.
+func (ep *EditorPane) SkillName() string {
+	if ep.currentSkill == nil {
+		return ""
+	}
+	return ep.currentSkill.Name
 }
 
 // NewEditorPane creates a new EditorPane.
@@ -38,17 +52,24 @@ func NewEditorPane(win fyne.Window, onSaved func()) *EditorPane {
 	ep.entry.SetPlaceHolder("--- \nname: my-skill\ndescription: Skill description\n---\n# Instructions...")
 
 	ep.saveBtn = widget.NewButtonWithIcon("Save SKILL.md", theme.DocumentSaveIcon(), func() {
-		ep.save()
+		ep.saveAsync()
 	})
 	ep.saveBtn.Importance = widget.HighImportance
 	ep.saveBtn.Disable()
+	undoBtn := widget.NewButton("Undo", func() {
+		ep.entry.TypedShortcut(&fyne.ShortcutUndo{})
+	})
+	redoBtn := widget.NewButton("Redo", func() {
+		ep.entry.TypedShortcut(&fyne.ShortcutRedo{})
+	})
 
 	ep.entry.OnChanged = func(content string) {
+		ep.dirty = content != ep.saved
 		ep.validate(content)
 	}
 
 	headerLeft := container.NewVBox(ep.titleLabel, ep.validationLabel)
-	header := container.NewBorder(nil, nil, headerLeft, ep.saveBtn)
+	header := container.NewBorder(nil, nil, headerLeft, container.NewHBox(undoBtn, redoBtn, ep.saveBtn))
 
 	ep.container = container.NewBorder(header, nil, nil, nil, ep.entry)
 
@@ -56,11 +77,57 @@ func NewEditorPane(win fyne.Window, onSaved func()) *EditorPane {
 }
 
 // LoadSkill loads a skill into the editor.
+// Unsaved text is kept until the user confirms a discard.
 func (ep *EditorPane) LoadSkill(skill *core.Skill) {
+	if ep.prompting {
+		return
+	}
+	same := skill != nil && ep.currentSkill != nil && skill.Path == ep.currentSkill.Path
+	if same && skill.Content == ep.saved {
+		return
+	}
+	if same && ep.dirty && skill.Content != ep.saved {
+		ep.prompting = true
+		dialog.ShowConfirm("Skill changed on disk", "Reload the file from disk and discard your edits?", func(ok bool) {
+			ep.prompting = false
+			if ok {
+				ep.dirty = false
+				ep.load(skill)
+			}
+		}, ep.window)
+		return
+	}
+	if ep.dirty && !same {
+		ep.prompting = true
+		dialog.ShowConfirm("Unsaved changes", "Discard unsaved edits to this skill?", func(ok bool) {
+			ep.prompting = false
+			if !ok {
+				return
+			}
+			ep.dirty = false
+			ep.load(skill)
+		}, ep.window)
+		return
+	}
+	ep.load(skill)
+}
+
+func (ep *EditorPane) load(skill *core.Skill) {
 	ep.currentSkill = skill
+	ep.dirty = false
 	if skill == nil {
 		ep.titleLabel.SetText("SKILL.md Editor")
 		ep.validationLabel.SetText("Select a skill from the left to edit")
+		ep.saved = ""
+		ep.entry.SetText("")
+		ep.entry.Disable()
+		ep.saveBtn.Disable()
+		return
+	}
+	if len(skill.Content) > maxEditorBytes {
+		ep.titleLabel.SetText(fmt.Sprintf("Editing: %s (%s)", skill.Name, skill.Path))
+		ep.validationLabel.SetText("This SKILL.md is larger than 1 MiB. Edit it in an external editor, then refresh.")
+		ep.saved = ""
 		ep.entry.SetText("")
 		ep.entry.Disable()
 		ep.saveBtn.Disable()
@@ -69,7 +136,9 @@ func (ep *EditorPane) LoadSkill(skill *core.Skill) {
 
 	ep.entry.Enable()
 	ep.titleLabel.SetText(fmt.Sprintf("Editing: %s (%s)", skill.Name, skill.Path))
+	ep.saved = skill.Content
 	ep.entry.SetText(skill.Content)
+	ep.dirty = false
 	ep.validate(skill.Content)
 }
 
@@ -101,6 +170,28 @@ func (ep *EditorPane) validate(content string) {
 	ep.saveBtn.Enable()
 }
 
+const maxEditorBytes = 1 << 20
+
+func (ep *EditorPane) saveAsync() {
+	if ep.currentSkill == nil {
+		return
+	}
+	content := ep.entry.Text
+	path := ep.currentSkill.Path
+	ep.saveBtn.Disable()
+	go func() {
+		updated, err := core.WriteSkill(path, content)
+		fyne.Do(func() {
+			if err != nil {
+				showError(fmt.Errorf("failed to save skill: %w", err), ep.window)
+				ep.validate(ep.entry.Text)
+				return
+			}
+			ep.finishSave(updated, content)
+		})
+	}()
+}
+
 func (ep *EditorPane) save() {
 	if ep.currentSkill == nil {
 		return
@@ -109,11 +200,17 @@ func (ep *EditorPane) save() {
 	content := ep.entry.Text
 	updatedSkill, err := core.WriteSkill(ep.currentSkill.Path, content)
 	if err != nil {
-		dialog.ShowError(fmt.Errorf("failed to save skill: %w", err), ep.window)
+		showError(fmt.Errorf("failed to save skill: %w", err), ep.window)
 		return
 	}
+	ep.finishSave(updatedSkill, content)
+}
+
+func (ep *EditorPane) finishSave(updatedSkill *core.Skill, content string) {
 
 	ep.currentSkill = updatedSkill
+	ep.saved = content
+	ep.dirty = false
 	ep.validate(content)
 
 	dialog.ShowInformation("Saved", fmt.Sprintf("Successfully saved SKILL.md for %q", updatedSkill.Name), ep.window)

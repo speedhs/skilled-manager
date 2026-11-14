@@ -5,9 +5,10 @@ package ui
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2/test"
-	"github.com/skilled-manager/skills-manager/pkg/core"
+	"github.com/speedhs/skilled-manager/pkg/core"
 )
 
 func setupTestManager(t *testing.T) (*core.Manager, string) {
@@ -68,13 +69,16 @@ func TestSkillListPane(t *testing.T) {
 		t.Fatalf("expected 3 filtered skills, got %d", len(pane.filteredSkills))
 	}
 
-	// Test Search Filter
 	pane.searchEntry.SetText("beta")
+	waitFilter(t, func() bool {
+		return len(pane.filteredSkills) == 1 && pane.filteredSkills[0].Name == "beta-skill"
+	})
 	if len(pane.filteredSkills) != 1 || pane.filteredSkills[0].Name != "beta-skill" {
 		t.Fatalf("search filter failed: expected 1 skill 'beta-skill', got %d", len(pane.filteredSkills))
 	}
 
 	pane.searchEntry.SetText("")
+	waitFilter(t, func() bool { return len(pane.filteredSkills) == 3 })
 	if len(pane.filteredSkills) != 3 {
 		t.Fatalf("clearing search filter failed: expected 3, got %d", len(pane.filteredSkills))
 	}
@@ -83,6 +87,17 @@ func TestSkillListPane(t *testing.T) {
 	pane.SelectSkillByName("gamma-skill")
 	if selectedSkill.Name != "gamma-skill" {
 		t.Errorf("expected selected skill gamma-skill, got %s", selectedSkill.Name)
+	}
+}
+
+func waitFilter(t *testing.T, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ready() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -95,7 +110,7 @@ func TestEditorPaneValidationAndSave(t *testing.T) {
 		saved = true
 	})
 
-	mgr, canonicalDir := setupTestManager(t)
+	_, canonicalDir := setupTestManager(t)
 	skill, err := core.CreateSkill(canonicalDir, "editor-test", "Initial Description", "# Instructions")
 	if err != nil {
 		t.Fatalf("failed to create skill: %v", err)
@@ -158,14 +173,13 @@ func TestMatrixPaneRendering(t *testing.T) {
 		t.Fatalf("failed to create skill: %v", err)
 	}
 
-	updated := false
-	matrix := NewMatrixPane(mgr, testWin, func() {
-		updated = true
-	})
-
+	matrix := NewMatrixPane(mgr, testWin, nil)
 	matrix.SetData([]core.Skill{*skill}, mgr.GetTargets())
-
 	if len(matrix.content.Objects) == 0 {
 		t.Fatalf("expected matrix content to have objects")
+	}
+	st := matrix.statusFor(skill.Name, "claude")
+	if GetStatusLabel(st.Code) != "Disabled" {
+		t.Fatalf("status text = %q, want Disabled", GetStatusLabel(st.Code))
 	}
 }
