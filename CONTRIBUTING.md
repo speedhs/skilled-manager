@@ -5,13 +5,15 @@ Thank you for contributing to Skills Manager.
 ## Development Setup
 
 1. Prerequisites:
-   - Go 1.21+
+   - Go 1.25+
    - Make
 
 2. Build and Test:
    ```bash
    # Run core test suite
    make test
+   make lint
+   make test-race
 
    # Build static CLI
    make build-cli
@@ -39,13 +41,12 @@ Releases are automated via GitHub Actions on tag push:
 # 1. Ensure all tests pass
 make test
 
-# 2. Create and push a semver tag
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
+# 2. Create and push a v0 tag. v1 waits until the library API is frozen.
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
 ```
 
-GitHub Actions will automatically:
-- Run the full test suite.
-- Build multi-platform static CLI archives via GoReleaser.
-- Package desktop GUI applications via Fyne for Linux, macOS, and Windows.
-- Publish artifacts to the GitHub Releases page with generated changelog notes.
+GitHub Actions will:
+- Run the test suite.
+- Build static CLI archives with GoReleaser, checksums, an SBOM, and a keyless cosign signature.
+- Package unsigned desktop builds with Fyne. See `docs/RELEASE.md`.

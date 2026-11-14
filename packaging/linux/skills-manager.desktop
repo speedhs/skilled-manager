@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Skills Manager
+GenericName=AI skill manager
+Comment=Deploy SKILL.md folders to Claude Code, Codex, OpenCode, and Gemini CLI
+Exec=skills-gui
+Icon=skills-manager
+Terminal=false
+Categories=Development;
+StartupNotify=true

@@ -12,7 +12,7 @@ Ordered work. Each item is done when its acceptance criteria hold and `go test -
 6. **Semver stays v0** until a later major. `apidiff` runs in CI only when the latest tag is v1 or newer.
 7. **No update checker.** An update check needs the network. The CLI and library must not open network connections. The idea is on the roadmap.
 8. **Desktop builds are unsigned** until a Developer ID and a Windows certificate exist. Release notes and the About dialog say so, and `docs/RELEASE.md` lists the first-run click-through.
-9. **Oldest supported Go is 1.23** (required by `fsnotify`). CI tests 1.23 and the latest stable on the runner image.
+9. **Oldest supported Go is 1.25.** `fsnotify` only needs 1.23. `golang.org/x/text` v0.39.0, which fixes GO-2026-5970, requires Go 1.25. CI tests 1.25 and the latest stable.
 
 ## Phase 0 — identity and targets
 
@@ -45,7 +45,7 @@ Ordered work. Each item is done when its acceptance criteria hold and `go test -
 - Fault-injecting `FS` for `ENOSPC` on state save rolls the deployment back.
 - `testscript` covers every CLI command, including exit codes.
 - Fyne tests for the list, editor validation, and matrix status text.
-- CI: Linux, macOS, Windows; Go 1.23 and latest; `-race` where the OS supports it. GUI tests run where a C compiler and OpenGL headers exist.
+- CI: Linux, macOS (arm64 and amd64), Windows; Go 1.25 and latest; `-race` where the OS supports it. GUI tests run where a C compiler and OpenGL headers exist.
 
 ## Phase 3 — CLI
 

@@ -1,153 +1,124 @@
-name: Release & Packaging
+name: Release
 
 on:
   push:
     tags:
-      - 'v*.*.*'
-      - 'v*'
+      - "v*.*.*"
 
 permissions:
   contents: write
-  packages: write
+  id-token: write
 
 jobs:
   test:
-    name: Run Unit Tests
+    name: Test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: '1.27.x'
+          go-version: stable
           cache: true
 
-      - name: Run Core Tests
-        run: |
-          go test -v -race ./pkg/core/...
+      - name: Test
+        run: go test -race ./pkg/core/ ./internal/cli/ ./internal/version/
 
-  build-cli:
-    name: Build Multi-Platform CLI (GoReleaser)
+  cli:
+    name: CLI archives
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: '1.27.x'
+          go-version: stable
           cache: true
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
+      - name: Install syft and cosign
+        run: |
+          curl -sSfL -o /tmp/syft.tar.gz https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_linux_amd64.tar.gz
+          tar -C /usr/local/bin -xzf /tmp/syft.tar.gz syft
+          curl -sSfL -o /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
+          chmod +x /usr/local/bin/cosign
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-gui-linux:
-    name: Package GUI (Linux)
+  gui:
+    name: GUI (${{ matrix.os }})
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: skills-gui-linux-amd64.tar.gz
+          - os: macos-latest
+            artifact: skills-gui-darwin.zip
+          - os: windows-latest
+            artifact: skills-gui-windows-amd64.zip
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: '1.27.x'
+          go-version: stable
           cache: true
 
-      - name: Install Linux GUI Dependencies
+      - name: Linux GUI libraries
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
 
-      - name: Install Fyne Packaging CLI
-        run: |
-          go install fyne.io/fyne/v2/cmd/fyne@latest
+      - name: Windows C compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install mingw -y
 
-      - name: Package GUI with Fyne
-        run: |
-          cd cmd/skills-gui
-          fyne package -os linux -name "skills-gui" -appID "com.agent.skillsmanager"
-          tar -czvf ../../skills-gui-linux-amd64.tar.gz skills-gui.tar.xz || tar -czvf ../../skills-gui-linux-amd64.tar.gz *
+      - name: Install fyne
+        run: go install fyne.io/fyne/v2/cmd/fyne@v2.8.1
 
-      - name: Upload Linux GUI Artifact to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: skills-gui-linux-amd64.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-gui-macos:
-    name: Package GUI (macOS)
-    needs: test
-    runs-on: macos-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache: true
-
-      - name: Install Fyne Packaging CLI
-        run: |
-          go install fyne.io/fyne/v2/cmd/fyne@latest
-
-      - name: Package GUI with Fyne
-        run: |
-          cd cmd/skills-gui
-          fyne package -os darwin -name "Skills Manager" -appID "com.agent.skillsmanager"
-          zip -r ../../skills-gui-darwin-universal.zip "Skills Manager.app"
-
-      - name: Upload macOS GUI Artifact to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: skills-gui-darwin-universal.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-gui-windows:
-    name: Package GUI (Windows)
-    needs: test
-    runs-on: windows-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache: true
-
-      - name: Install Fyne Packaging CLI
-        run: |
-          go install fyne.io/fyne/v2/cmd/fyne@latest
-
-      - name: Package GUI with Fyne
+      - name: Package
         shell: bash
         run: |
           cd cmd/skills-gui
-          fyne package -os windows -name "skills-gui" -appID "com.agent.skillsmanager"
-          powershell Compress-Archive -Path skills-gui.exe -DestinationPath ../../skills-gui-windows-amd64.zip
+          case "${{ runner.os }}" in
+            Linux)
+              fyne package -os linux -name skills-gui -appID com.agent.skillsmanager -icon ../../packaging/skills-manager.png
+              tar -czf ../../skills-gui-linux-amd64.tar.gz skills-gui.tar.xz ../../packaging/UNSIGNED.txt ../../packaging/linux/skills-manager.desktop ../../packaging/skills-manager.png
+              ;;
+            macOS)
+              fyne package -os darwin -name "Skills Manager" -appID com.agent.skillsmanager -icon ../../packaging/skills-manager.png
+              cp ../../packaging/UNSIGNED.txt "Skills Manager.app/Contents/Resources/UNSIGNED.txt" || cp ../../packaging/UNSIGNED.txt .
+              zip -r ../../skills-gui-darwin.zip "Skills Manager.app" ../../packaging/UNSIGNED.txt
+              ;;
+            Windows)
+              fyne package -os windows -name skills-gui -appID com.agent.skillsmanager -icon ../../packaging/skills-manager.png
+              powershell Compress-Archive -Path skills-gui.exe,../../packaging/UNSIGNED.txt -DestinationPath ../../skills-gui-windows-amd64.zip
+              ;;
+          esac
 
-      - name: Upload Windows GUI Artifact to Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
-          files: skills-gui-windows-amd64.zip
+          files: ${{ matrix.artifact }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

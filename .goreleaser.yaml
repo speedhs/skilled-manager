@@ -1,4 +1,3 @@
-# .goreleaser.yaml
 version: 2
 
 project_name: skills-manager
@@ -38,9 +37,9 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
+      - -X github.com/speedhs/skilled-manager/internal/version.Version={{ .Version }}
+      - -X github.com/speedhs/skilled-manager/internal/version.Commit={{ .Commit }}
+      - -X github.com/speedhs/skilled-manager/internal/version.Date={{ .Date }}
 
 archives:
   - id: skills-cli-archive
@@ -53,20 +52,72 @@ archives:
     files:
       - LICENSE
       - README.md
+      - CHANGELOG.md
+      - packaging/UNSIGNED.txt
 
 checksum:
-  name_template: "checksums.txt"
+  name_template: checksums.txt
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+    artifacts: checksum
+
+sboms:
+  - artifacts: archive
+
+nfpms:
+  - id: skills
+    package_name: skills-manager
+    builds:
+      - skills-cli
+    vendor: speedhs
+    homepage: https://github.com/speedhs/skilled-manager
+    maintainer: speedhs <speedhs@users.noreply.github.com>
+    description: Manage AI agent skills for Claude Code, Codex, OpenCode, and Gemini CLI.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+
+brews:
+  - name: skills
+    repository:
+      owner: speedhs
+      name: homebrew-tap
+    homepage: https://github.com/speedhs/skilled-manager
+    description: Manage AI agent skills for Claude Code, Codex, OpenCode, and Gemini CLI.
+    license: MIT
+    skip_upload: true
+
+scoops:
+  - name: skills
+    repository:
+      owner: speedhs
+      name: scoop-bucket
+    homepage: https://github.com/speedhs/skilled-manager
+    description: Manage AI agent skills for Claude Code, Codex, OpenCode, and Gemini CLI.
+    license: MIT
+    skip_upload: true
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
+  use: conventional
   filters:
     exclude:
       - "^docs:"
       - "^test:"
-      - "merge conflict"
       - Merge pull request
       - Merge branch
 

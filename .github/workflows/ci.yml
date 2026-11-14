@@ -6,34 +6,129 @@ on:
       - master
       - main
   pull_request:
-    branches:
-      - master
-      - main
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }}
+    name: Test ${{ matrix.os }} / Go ${{ matrix.go }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macos-latest is arm64. macos-15-intel is the hosted amd64 image.
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+        go: ["1.25.x", "stable"]
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: '1.27.x'
+          go-version: ${{ matrix.go }}
           cache: true
 
-      - name: Run Core Tests with Race Detector
-        run: |
-          go test -v -race ./pkg/core/...
+      - name: Unit tests with race
+        run: go test -race ./pkg/core/ ./internal/cli/ ./internal/version/
 
-      - name: Verify CLI Static Build (CGO_ENABLED=0)
+      - name: Dependency and hermetic guards
         shell: bash
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/skills ./cmd/skills
-          ./bin/skills targets || ./bin/skills.exe targets
+          sh ./scripts/check-deps.sh
+          sh ./scripts/check-hermetic.sh
+          sh ./scripts/apidiff.sh
+
+      - name: Static CLI
+        shell: bash
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o bin/skills ./cmd/skills
+          ./bin/skills version || ./bin/skills.exe version
+
+      - name: Linux GUI tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev pkg-config
+          go test -tags 'x11,fyne_gui' ./internal/ui/
+
+      - name: macOS GUI tests
+        if: runner.os == 'macOS'
+        run: go test -tags fyne_gui ./internal/ui/
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+          cache: true
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          staticcheck ./pkg/core/ ./internal/cli/ ./internal/version/ ./cmd/skills/
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+      - name: gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+          gosec -exclude=G301,G302,G304,G306 ./pkg/core/... ./internal/cli/... ./cmd/skills/...
+
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          golangci-lint run ./pkg/core/... ./internal/cli/... ./internal/version/... ./cmd/skills/...
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Fuzz targets
+        run: |
+          go test ./pkg/core/ -fuzz=FuzzParseFrontmatter -fuzztime=20s
+          go test ./pkg/core/ -fuzz=FuzzExpandPath -fuzztime=20s
+          go test ./pkg/core/ -fuzz=FuzzValidateSkillName -fuzztime=20s
+          go test ./pkg/core/ -fuzz=FuzzImportZip -fuzztime=20s
+          go test ./pkg/core/ -fuzz=FuzzGeminiTOML -fuzztime=20s
+
+  snapshot:
+    name: GoReleaser snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Snapshot
+        uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish,sign,sbom

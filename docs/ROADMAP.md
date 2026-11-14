@@ -10,3 +10,6 @@ Not in this release. Recorded so they are not built accidentally.
 - Skill rename / delete from the GUI, with the same delete rules as disable.
 - Merge dialog when the editor and disk both changed, instead of reload-or-keep.
 - Import from a git URL. That is a network feature and stays out until the no-network rule is revisited.
+- Reject the Claude Code reserved directory name `synced` without blocking that name for other tools.
+- Screenshot or GIF of the GUI once the window has been exercised on a machine with a display.
+- Run the Windows symlink, junction, and copy fallback on a non-elevated runner and record the result. The code and the CI job exist; this workspace did not execute them.

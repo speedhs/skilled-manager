@@ -1,393 +1,117 @@
 # Skills Manager
 
-**Skills Manager** is a cross-platform native desktop application and CLI written in Go using [Fyne](https://fyne.io/) (v2.5+) that organizes and manages AI agent "skills" (`SKILL.md` folders) from a single canonical store and exposes them to multiple AI tools: **Claude Code**, **Codex CLI**, **OpenCode**, and **Gemini CLI**.
+Skills Manager keeps Agent Skills (`SKILL.md` folders) in one directory and deploys them to Claude Code, Codex CLI, OpenCode, and Gemini CLI. The CLI is static Go. The desktop window uses Fyne. Library code is `pkg/core` and does not import Fyne.
 
-The core engine is located in [`pkg/core`](./pkg/core) as a clean, standalone, pure Go library with zero GUI dependencies, ready to be imported into any Go application or agent runtime.
+The module path is `github.com/speedhs/skilled-manager`.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/skilled-manager/skills-manager/pkg/core.svg)](https://pkg.go.dev/github.com/skilled-manager/skills-manager/pkg/core)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+## Install the CLI
 
----
-
-## Table of Contents
-- [Installation](#installation)
-  - [Install CLI via Go](#install-cli-via-go)
-  - [Download Pre-Built Binaries](#download-pre-built-binaries)
-  - [Install Desktop GUI](#install-desktop-gui)
-  - [Build from Source](#build-from-source)
-- [Using as a Go Library (`pkg/core`)](#using-as-a-go-library-pkgcore)
-- [Architecture Overview](#architecture-overview)
-- [Core Model & Storage](#core-model--storage)
-- [Tool Target Matrix](#tool-target-matrix)
-- [Features](#features)
-- [CLI Usage](#cli-usage)
-- [GUI Walkthrough](#gui-walkthrough)
-- [Safety & Collision Guarantees](#safety--collision-guarantees)
-- [Assumptions & Path Verification](#assumptions--path-verification)
-- [Testing & Quality Assurance](#testing--quality-assurance)
-
----
-
-## Installation
-
-### Install CLI via Go
-
-You can install the `skills` CLI directly using `go install`. The CLI builds completely statically without CGO (`CGO_ENABLED=0`):
+From a checkout:
 
 ```bash
-CGO_ENABLED=0 go install github.com/skilled-manager/skills-manager/cmd/skills@latest
+CGO_ENABLED=0 go install ./cmd/skills
 ```
 
-Verify the installation:
+After this commit is on the default branch:
+
 ```bash
-skills list
+CGO_ENABLED=0 go install github.com/speedhs/skilled-manager/cmd/skills@latest
 ```
 
-### Download Pre-Built Binaries
+`skills version` prints the version, commit, and build date. `skills help` lists commands. Exit codes are 0 success, 1 error, 2 usage, 3 conflict, and 4 partial success.
 
-Pre-compiled static binaries for macOS, Linux, Windows, and FreeBSD are published with every release:
+Release archives are built by GoReleaser for Linux, macOS, Windows, and FreeBSD. See [docs/RELEASE.md](docs/RELEASE.md). GUI builds are unsigned until signing certificates exist. Read `packaging/UNSIGNED.txt` before the first launch.
 
-1. Visit the [Releases](https://github.com/skilled-manager/skills-manager/releases) page.
-2. Download the archive for your operating system and architecture:
-   - Linux: `skills-manager-cli_<version>_linux_amd64.tar.gz` (or `arm64`)
-   - macOS: `skills-manager-cli_<version>_darwin_all.tar.gz`
-   - Windows: `skills-manager-cli_<version>_windows_amd64.zip`
-3. Extract the binary and place it in your `$PATH` (e.g. `/usr/local/bin` or `C:\Windows\System32`).
+## Build
 
-### Install Desktop GUI
+Go 1.25 or newer. The GUI also needs a C compiler and, on Linux, OpenGL and X11 headers.
 
-Native packaged desktop releases are built via `fyne package` for each platform:
-- **macOS**: Download `skills-gui-darwin-universal.zip`, extract `Skills Manager.app`, and drag it into `/Applications`.
-- **Windows**: Download `skills-gui-windows-amd64.zip`, extract, and run `skills-gui.exe`.
-- **Linux**: Download `skills-gui-linux-amd64.tar.gz`, extract, and launch the binary.
-
-### Build from Source
-
-#### Prerequisites
-- **Go 1.21+**
-- On Linux (only needed for compiling the GUI binary, not the CLI):
-  ```bash
-  sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
-  ```
-
-#### Building
 ```bash
-# Clone the repository
-git clone https://github.com/skilled-manager/skills-manager.git
-cd skills-manager
-
-# Build pure static CLI binary
 make build-cli
-
-# Run Desktop GUI directly
-make run-gui
-
-# Run unit tests
 make test
+make build-gui   # CGO
 ```
 
----
-
-## Using as a Go Library (`pkg/core`)
-
-The `pkg/core` package provides a standalone Go API for managing agent skills, evaluating deployment states, computing directory drift, and converting skills between formats without any GUI or CGO requirements.
-
-### Installation
-```bash
-go get github.com/skilled-manager/skills-manager/pkg/core
-```
-
-### Code Example
+## Library
 
 ```go
-package main
-
-import (
-	"fmt"
-	"log"
-
-	"github.com/skilled-manager/skills-manager/pkg/core"
+mgr, err := core.NewManager(
+    core.WithCanonicalDir(canonicalDir),
+    core.WithConfigDir(configDir),
 )
-
-func main() {
-	// Initialize manager with custom or default paths
-	mgr, err := core.NewManager(
-		core.WithCanonicalDir("~/.agent-skills"),
-		core.WithConfigDir("~/.agent-skills-manager"),
-	)
-	if err != nil {
-		log.Fatalf("Failed to initialize manager: %v", err)
-	}
-
-	// 1. Create a new skill
-	skill, err := core.CreateSkill(
-		mgr.CanonicalDir,
-		"code-reviewer",
-		"Reviews pull requests for performance and security",
-		"# Code Reviewer\n\nEnsure all errors are handled and memory leaks checked.",
-	)
-	if err != nil {
-		log.Printf("Skill might already exist: %v", err)
-	} else {
-		fmt.Printf("Created skill: %s\n", skill.Name)
-	}
-
-	// 2. List all skills
-	skills, err := core.ListSkills(mgr.CanonicalDir)
-	if err != nil {
-		log.Fatalf("Failed to list skills: %v", err)
-	}
-
-	// 3. Enable for a specific target
-	res, err := mgr.Enable("code-reviewer", "claude")
-	if err != nil {
-		log.Printf("Enable error: %v", err)
-	} else {
-		fmt.Printf("Enabled on Claude: %s (%s)\n", res.TargetPath, res.Mode)
-	}
-
-	// 4. Inspect status
-	status, _ := mgr.Status("code-reviewer", "claude")
-	fmt.Printf("Status on Claude: %s (%s)\n", status.Code, status.Message)
-
-	// 5. Synchronize all drifted copies & TOML files
-	report, err := mgr.Sync()
-	if err != nil {
-		log.Fatalf("Sync error: %v", err)
-	}
-	fmt.Printf("Sync report: %d updated, %d skipped\n", len(report.Updated), len(report.Skipped))
-}
+skill, err := core.CreateSkill(mgr.CanonicalDir, "code-reviewer", "Reviews pull requests", "# Review\n")
+_, err = core.ListSkills(mgr.CanonicalDir)
+_, err = mgr.Enable(ctx, "code-reviewer", "claude")
+status, err := mgr.Status(ctx, "code-reviewer", "claude")
+_, err = mgr.Sync(ctx)
 ```
 
----
+`TestReadmeSnippet` in `pkg/core/readme_example_test.go` compiles those calls. Long operations take `context.Context`. Dry-run is `core.WithDryRun`.
 
-## Architecture Overview
+## Targets
 
-```
-skills-manager/
-├── .github/
-│   └── workflows/
-│       └── release.yml          # Automated CI/CD release workflow (GoReleaser + Fyne packaging)
-├── .goreleaser.yaml             # Multi-platform static CLI build configuration (CGO off)
-├── cmd/
-│   ├── skills/                  # Command-line interface
-│   │   └── main.go              # CLI entrypoint (CGO_ENABLED=0)
-│   └── skills-gui/              # Native Fyne GUI application
-│       └── main.go              # Desktop GUI entrypoint
-├── pkg/
-│   └── core/                    # Pure Go library (Zero Fyne imports, importable)
-│       ├── config.go            # Target configurations & defaults
-│       ├── enable.go            # Enable, Disable, and Sync operations
-│       ├── export.go            # ZIP export of canonical skills & nested folders
-│       ├── frontmatter.go       # YAML frontmatter parsing, validation & serialization
-│       ├── gemini.go            # Gemini CLI TOML conversion (<skill>.toml)
-│       ├── hash.go              # Deterministic directory & file hashing for drift detection
-│       ├── import.go            # Scanning & importing existing target skills
-│       ├── link.go              # Cross-platform symlink/junction/copy fallback
-│       ├── manager.go           # Central Manager coordinator
-│       ├── path.go              # Path expansion (~, $ENV, %VAR%)
-│       ├── skill.go             # Canonical skill CRUD & parsing
-│       ├── state.go             # State tracking (~/.agent-skills-manager/state.json)
-│       ├── status.go            # Cell status evaluation (enabled/disabled/conflict/drifted/broken)
-│       ├── watcher.go           # fsnotify watcher with debounced event dispatch
-│       ├── core_test.go         # Core unit test suite
-│       └── gemini_test.go       # Gemini TOML unit test suite
-├── internal/
-│   └── ui/                      # Fyne desktop UI layer (calls only pkg/core)
-│       ├── app.go               # Main window layout, split views, watcher integration
-│       ├── dialogs.go           # New Skill, Import Existing, Settings, Sync Report dialogs
-│       ├── editor.go            # Multi-line SKILL.md editor with frontmatter validation
-│       ├── matrix.go            # Skills x Tools interactive matrix
-│       ├── skill_list.go        # Searchable skill list pane
-│       ├── toolbar.go           # Top action toolbar
-│       ├── types.go             # UI constants, status color palette
-│       └── ui_test.go           # UI component test suite
-├── Makefile                     # Build & test automation
-├── LICENSE                      # MIT License
-├── go.mod
-├── go.sum
-└── README.md
-```
+Checked on 2026-11-14. Details and links are in [docs/TARGETS.md](docs/TARGETS.md).
 
----
+| Tool | Path | Mode |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills` | symlink |
+| Codex CLI | `~/.agents/skills` | symlink |
+| OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` | symlink |
+| Gemini CLI | `~/.gemini/skills` | symlink |
 
-## Core Model & Storage
+`gemini-toml` is optional and lossy: it keeps the description and body and drops scripts, references, assets, and extra frontmatter. An existing `targets.json` is not rewritten. `skills doctor` warns when a built-in id differs from the catalog.
 
-1. **Canonical Store**:
-   - Location: `~/.agent-skills/<skill-name>/SKILL.md` (plus optional `scripts/`, `refs/`, etc.).
-   - Format: `SKILL.md` with YAML frontmatter delimited by `---` and a Markdown body:
-     ```markdown
-     ---
-     name: git-commit-helper
-     description: Generates clean conventional commit messages
-     ---
-     # Git Commit Helper
-     Instructions for writing commit messages...
-     ```
-
-2. **Configuration File**:
-   - Location: `~/.agent-skills-manager/targets.json`
-   - Created with sensible defaults if missing, and fully editable from the UI Settings dialog or CLI:
-     ```json
-     [
-       {"id":"claude","label":"Claude Code","path":"~/.claude/skills","mode":"symlink","format":"skill"},
-       {"id":"codex","label":"Codex CLI","path":"~/.codex/skills","mode":"symlink","format":"skill"},
-       {"id":"opencode","label":"OpenCode","path":"~/.config/opencode/skill","mode":"symlink","format":"skill"},
-       {"id":"gemini","label":"Gemini CLI","path":"~/.gemini/commands","mode":"copy","format":"gemini-toml"}
-     ]
-     ```
-
-3. **State Tracker**:
-   - Location: `~/.agent-skills-manager/state.json`
-   - Tracks created copies, generated TOML files, content hashes, and Windows fallback modes to ensure safe deletion and drift detection.
-
----
-
-## Tool Target Matrix
-
-| Status | Badge / Indicator | Description | Action Behavior |
-| :--- | :--- | :--- | :--- |
-| **`enabled`** | Green | Active and synchronized with canonical store | Unchecking disables and removes symlink/copy |
-| **`disabled`** | Gray | Not installed in target directory | Checking enables skill for that target |
-| **`drifted`** | Yellow | Target copy or Gemini TOML differs from canonical `SKILL.md` | "Sync All" or re-checking updates copy |
-| **`conflict`** | Red | Target exists but was NOT created by Skills Manager | Collision refused; protected from overwrite/deletion |
-| **`broken`** | Purple | Symlink target is missing or dangling | "Sync All" repairs link if canonical exists |
-
----
-
-## Features
-
-- **Single Canonical Source**: Maintain skills in one directory (`~/.agent-skills`) and deploy anywhere.
-- **Pure Go CLI with Zero CGO**: Compile and run anywhere without C dependencies (`CGO_ENABLED=0`).
-- **Cross-Platform Symlinks & Fallbacks**:
-  - Linux & macOS: Direct filesystem symlinks.
-  - Windows: Attempts symlinks; automatically falls back to Directory Junctions (`mklink /J`) or Directory Copies when elevated privileges are not granted.
-- **Gemini CLI Command Generation**: Converts `SKILL.md` (`description` + `prompt` body) into standard Gemini `.toml` command files automatically.
-- **Drift Detection**: SHA-256 content hashing across directory trees and TOML files detects when canonical skills or targets change.
-- **Collision Protection**: Never overwrites or deletes files or folders that were not created by Skills Manager.
-- **Import Existing**: Scans target folders for existing real skill folders or `.toml` commands, moves them into the canonical store, and links them back in place.
-- **Real-Time File Watcher**: `fsnotify` watches the canonical store and targets, with a 250ms debounce timer for responsive UI updates.
-- **Full-Featured Editor**: In-app multi-line editor for `SKILL.md` with live YAML frontmatter validation.
-- **ZIP Export**: Export all or selected skills with subfolders (`scripts/`, `refs/`) into a portable `.zip` archive.
-
----
-
-## CLI Usage
+## Commands
 
 ```bash
-# List all canonical skills and their deployment status per target
 skills list
-
-# Create a new canonical skill
 skills new my-helper "Assists with writing unit tests"
-
-# Enable a skill for all targets (or a specific target)
-skills enable my-helper
-skills enable my-helper gemini
-
-# Disable a skill
-skills disable my-helper claude
-
-# Synchronize all drifted copies, TOML files, and broken links
+skills enable my-helper claude
+skills --yes disable my-helper claude
 skills sync
-
-# Scan target directories for existing untracked skills
 skills import --scan
-
-# Import all discovered untracked skills into canonical store
-skills import --all
-
-# Export all canonical skills into a ZIP archive
+skills --yes import --all
 skills export my-skills.zip
-
-# List configured targets and their paths
-skills targets
+skills doctor
+skills backups
+skills restore <id>
+skills completion bash
 ```
 
----
+`--json` is accepted by `list`, `status`, `sync`, `targets`, `doctor`, `import --scan`, and `version`. `--dry-run` performs the checks and writes nothing. `--yes` is required for disable, restore, and `import --all` when stdin is not a terminal. `NO_COLOR` is honored because the CLI prints no color. `--verbose` logs to stderr.
 
-## GUI Walkthrough
+## Doctor
 
-```
-+-----------------------------------------------------------------------------------------------+
-| [New Skill]  [Import Existing]  [Sync All]  [Export Zip]  |  [Settings]  [Refresh]            |
-+----------------------+------------------------------------------------------------------------+
-| Search skills...     | Tool Deployment Matrix                                                 |
-+----------------------+------------------------------------------------------------------------+
-| * git-commit-helper  | Skill          Claude Code       Codex CLI     OpenCode    Gemini CLI |
-|   Generates commits  | git-commit...  [x] Enabled      [x] Enabled    [ ] Disabled[x] Enabled |
-|                      | code-reviewer  [x] Enabled      [ ] Disabled   [x] Drifted [x] Enabled |
-| * code-reviewer      | untracked-ext  [ ] Conflict     [ ] Disabled   [ ] Disabled[ ] Disabled|
-|   Reviews code       +------------------------------------------------------------------------+
-|                      | SKILL.md Editor - git-commit-helper                [ Save SKILL.md ]   |
-| * test-generator     | [Valid] Frontmatter valid (name matches folder, description non-empty) |
-|   Writes Go tests    | ---------------------------------------------------------------------- |
-|                      | ---                                                                    |
-|                      | name: git-commit-helper                                                |
-|                      | description: Generates conventional commit messages                    |
-|                      | ---                                                                    |
-|                      | # Git Commit Helper                                                    |
-|                      | Instructions for formatting commit messages...                         |
-+----------------------+------------------------------------------------------------------------+
-| Canonical Store: ~/.agent-skills | 3 skills | Targets: 4                                      |
-+-----------------------------------------------------------------------------------------------+
-```
+`skills doctor` checks the canonical directory, the config directory, symlink creation, each target path, broken links, and state entries that no longer match. A failing check is exit code 1. The `fix` field is the next command or filesystem change to try.
 
-1. **Left Pane**: Search and filter skills in real time.
-2. **Main (Top-Right)**: Interactive deployment matrix. Check/uncheck cells to enable/disable tools. Click **Info** for details and collision diagnostics.
-3. **Editor (Bottom-Right)**: Edit `SKILL.md` with live frontmatter syntax and directory match validation.
-4. **Toolbar Actions**:
-   - **New Skill**: Modal form for name, description, and starting prompt.
-   - **Import Existing**: Discovers real skills in target directories and moves them into canonical store.
-   - **Sync All**: One-click synchronization for drifted copies and TOML files.
-   - **Settings**: Add, remove, or modify target paths, modes, and formats.
+| Check | What it usually means |
+| --- | --- |
+| canonical or config `fail` | The directory is missing or not writable. Pass `--canonical` or `--config`. |
+| symlink `fail` | This environment cannot create a symlink. On Windows the enable path falls back to a junction, then a copy, and records which one it used. |
+| target `fail` | The path did not expand, or a variable was empty. Set the variable or edit the target. |
+| conflict | The destination is not one this tool created, or both copies changed. Nothing is overwritten. Move the foreign file aside yourself, then enable again. |
+| lock `fail` | Another `skills` process or the GUI holds `manager.lock`. |
 
----
+## Limits
 
-## Safety & Collision Guarantees
+- A path is deleted only when it is a symlink to the canonical skill, or a copy recorded in `state.json` with a matching inode or content hash. Disable of anything else returns a conflict and leaves the file.
+- Sync updates a deployment only when the canonical skill changed and the deployed bytes did not. It does not pick a side when both changed.
+- Windows enable tries a symlink, then a directory junction, then a copy. That fallback is implemented and covered by cross-compiled code. It has not been executed on a Windows machine in this workspace. CI includes a Windows runner.
+- macOS volumes are case-insensitive. The name check rejects a second skill whose name differs only by case. That check was not run on an APFS volume here.
+- Zip import rolls back the skill that failed. Skills earlier in the same zip stay imported.
+- If saving state fails after a drifted copy was replaced, the new bytes remain and a backup is kept. The next status is a conflict, so sync will not overwrite it again.
+- The tool never runs scripts inside a skill and never opens a network connection.
+- There is no automatic update check.
 
-1. **Never Overwrite**:
-   If a destination path already exists and was not created by Skills Manager (not a symlink to canonical and not tracked in `state.json`), `Enable` refuses the operation with `StatusConflict`.
-2. **Never Delete Foreign Files**:
-   `Disable` only deletes symlinks pointing to canonical store or folders/files tracked in `state.json`. Unmanaged user directories are never touched.
-3. **Atomic State Tracking**:
-   State transitions are saved in `state.json` with timestamps, modes, and content hashes.
+## Development
 
----
-
-## Assumptions & Path Verification
-
-The default targets in `targets.json` use standard default directory paths for each tool. Users should verify these against their installed CLI versions and customize them via the UI Settings dialog if their configuration differs:
-
-| Tool | Default Path | Mode | Format | Verification Note |
-| :--- | :--- | :--- | :--- | :--- |
-| **Claude Code** | `~/.claude/skills` | `symlink` | `skill` | Standard location for user-defined Claude Code skills. |
-| **Codex CLI** | `~/.codex/skills` | `symlink` | `skill` | Default skill directory for Codex CLI. |
-| **OpenCode** | `~/.config/opencode/skill` | `symlink` | `skill` | Uses XDG config standard path on Linux/macOS. |
-| **Gemini CLI** | `~/.gemini/commands` | `copy` | `gemini-toml` | Commands folder where `.toml` custom command prompts reside. |
-
-*Note: Paths support `~` expansion, `$ENV` variables, and Windows `%VAR%` syntax. Target folders are automatically created upon first enable.*
-
----
-
-## Testing & Quality Assurance
-
-The codebase features comprehensive unit test coverage in `pkg/core`:
-- YAML Frontmatter parsing, validation, and serialization round-tripping.
-- Symlink mode enable/disable and broken link detection.
-- Copy mode enable/disable and recursive directory drift detection.
-- Gemini CLI TOML conversion and synchronization.
-- Collision protection and refusal of unmanaged files.
-- Import of existing unmanaged skills and Gemini TOML commands.
-- ZIP archive creation and nested file export.
-
-Run unit tests:
 ```bash
-make test
+make tools
+make lint
+make test-race
+make fuzz
+make cover
+make release-snapshot
 ```
 
----
-
-## License
-
-This project is licensed under the [MIT License](./LICENSE).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes the status machine. [CONTRIBUTING.md](CONTRIBUTING.md) is the contributor guide. [SECURITY.md](SECURITY.md) is the disclosure process.

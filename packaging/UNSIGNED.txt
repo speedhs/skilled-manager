@@ -1,0 +1,9 @@
+This build is unsigned.
+
+macOS: the first launch is blocked by Gatekeeper. Open the app from Finder with the control key held down, then choose Open, or remove the quarantine attribute with `xattr -d com.apple.quarantine` on the app bundle. There is no Developer ID or notarization on this artifact.
+
+Windows: SmartScreen shows "Windows protected your PC" for an unsigned executable. Choose "More info", then "Run anyway", if you trust the download.
+
+Linux: the tarball and packages are not signed. Check the release checksum file before extracting.
+
+Skills Manager does not phone home and does not execute scripts inside a skill.

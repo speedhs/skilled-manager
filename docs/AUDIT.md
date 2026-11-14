@@ -1,5 +1,29 @@
 # Skills Manager audit
 
+## Resolution
+
+The findings below describe the tree at `ac6263e`. The production changes address them as follows. Line numbers in the original findings are the pre-fix tree.
+
+Fixed in `pkg/core`, `internal/cli`, and `internal/ui`:
+
+- Skill names are a single path segment. Disable and delete require a symlink to the canonical skill or a matching `state.json` identity, and they do not follow symlinks.
+- Enable and import use exclusive create and roll back a failed publish. `state.json` is written atomically, versioned, and quarantined when corrupt. Mutations take a cross-process lock.
+- Path expansion rejects an unset or empty variable. Sync does not overwrite a target edit. Hashes ignore `.git`, `.DS_Store`, and `Thumbs.db` and do not follow symlinks. Zip import rejects slip, bombs, and symlink entries.
+- The CLI parses flags, uses exit codes, and returns partial failure as exit 4. The module path matches `github.com/speedhs/skilled-manager`.
+- Default targets come from `pkg/core/targets/catalog.json`, cited in `docs/TARGETS.md` (checked 2026-11-14). Frontmatter enforces the name, description, and compatibility limits and preserves unknown fields.
+- The watcher closes once, debounces, and has a `goleak` test. The GUI does filesystem work off the UI thread, confirms disable and sync, and keeps unsaved editor text.
+
+Deferred, with the reason:
+
+- Windows junction and copy fallback, long paths, and a non-elevated run have not been executed in this workspace. The code is in `pkg/core/link_windows.go` and CI includes `windows-latest`. See `docs/ROADMAP.md`.
+- macOS case-insensitive volumes and App Sandbox prompts were not executed here. Case collision is rejected by name, and the darwin path comparison folds case.
+- `go install ...@latest` works only after this commit is on the remote. Local check is `go install ./cmd/skills`.
+- GUI screenshots, notarization, Authenticode, and Homebrew or Scoop uploads wait on a display, certificates, and those repositories.
+- A drifted copy whose state save fails after the replace is not put back automatically. A backup exists and the next status is a conflict.
+- Zip import rolls back the skill that failed, not the earlier skills in the same archive.
+- Claude Code's reserved folder name `synced` is documented in `docs/TARGETS.md` and not rejected globally.
+- The supported Go version is 1.25, not 1.23. `golang.org/x/text` v0.39.0 fixes GO-2026-5970 and requires Go 1.25.
+
 Audited at commit `ac6263e` on 2026-11-14. Commands attempted: `go vet ./...` (GUI package fails to compile here because Wayland headers are not installed; `pkg/core` and `cmd/skills` vet clean once the GUI package is excluded), `CGO_ENABLED=0 go build -o /tmp/skills ./cmd/skills` (succeeds), `go test -race ./pkg/core/...` (passes on the pre-fix tree). `staticcheck` was not installed in the environment at audit time.
 
 Severity is about what the tool can do to a user's files. Data-loss outranks everything else.

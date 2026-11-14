@@ -1,53 +1,60 @@
-.PHONY: all build build-cli build-gui test test-core run-cli run-gui package-gui clean install-deps release-snapshot
+.PHONY: all lint test test-race fuzz cover build-cli build-gui release-snapshot tools clean
 
 BIN_DIR := ./bin
 CLI_BIN := $(BIN_DIR)/skills
 GUI_BIN := $(BIN_DIR)/skills-gui
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X github.com/speedhs/skilled-manager/internal/version.Version=$(VERSION) \
+	-X github.com/speedhs/skilled-manager/internal/version.Commit=$(COMMIT) \
+	-X github.com/speedhs/skilled-manager/internal/version.Date=$(DATE)
 
-all: build-cli build-gui
+all: build-cli
 
-# Build CLI binary with CGO disabled (pure static Go binary)
+tools:
+	go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+	go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+	go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+
+lint:
+	go vet ./pkg/core/ ./internal/cli/ ./internal/version/ ./cmd/skills/
+	staticcheck ./pkg/core/ ./internal/cli/ ./internal/version/ ./cmd/skills/
+	gosec -exclude=G301,G302,G304,G306 ./pkg/core/... ./internal/cli/... ./cmd/skills/...
+	golangci-lint run ./pkg/core/... ./internal/cli/... ./internal/version/... ./cmd/skills/...
+
+test:
+	go test ./pkg/core/ ./internal/cli/ ./internal/version/
+	sh ./scripts/check-deps.sh
+	sh ./scripts/check-hermetic.sh
+	sh ./scripts/apidiff.sh
+
+test-race:
+	go test -race ./pkg/core/ ./internal/cli/ ./internal/version/
+
+fuzz:
+	go test ./pkg/core/ -fuzz=FuzzParseFrontmatter -fuzztime=20s
+	go test ./pkg/core/ -fuzz=FuzzExpandPath -fuzztime=20s
+	go test ./pkg/core/ -fuzz=FuzzValidateSkillName -fuzztime=20s
+	go test ./pkg/core/ -fuzz=FuzzImportZip -fuzztime=20s
+	go test ./pkg/core/ -fuzz=FuzzGeminiTOML -fuzztime=20s
+
+cover:
+	go test -coverprofile=$(BIN_DIR)/cover.out ./pkg/core/
+	go tool cover -func=$(BIN_DIR)/cover.out
+
 build-cli:
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(CLI_BIN) ./cmd/skills
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(CLI_BIN) ./cmd/skills
 
-# Build GUI binary (requires CGO and display dependencies)
 build-gui:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(GUI_BIN) ./cmd/skills-gui
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(GUI_BIN) ./cmd/skills-gui
 
-build: build-cli
-
-# Package desktop GUI with fyne package tool
-package-gui:
-	@which fyne > /dev/null || (echo "Installing fyne CLI..." && go install fyne.io/fyne/v2/cmd/fyne@latest)
-	cd cmd/skills-gui && fyne package -name "skills-gui" -appID "com.agent.skillsmanager"
-
-# Run unit tests for pure Go core package
-test-core:
-	go test -v -race ./pkg/core/...
-
-test: test-core
-
-# Run all tests (including UI when graphical libraries are available)
-test-all:
-	go test -v ./...
-
-# Run the CLI tool
-run-cli:
-	go run ./cmd/skills list
-
-# Run the Fyne Desktop GUI
-run-gui:
-	go run ./cmd/skills-gui
-
-# Test GoReleaser build locally in snapshot mode
 release-snapshot:
-	goreleaser release --snapshot --clean
-
-# Install Linux GUI development dependencies (Debian/Ubuntu)
-install-deps:
-	sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+	goreleaser release --snapshot --clean --skip=publish,sign,sbom
 
 clean:
-	rm -rf $(BIN_DIR) dist/ agent-skills.zip *.tar.gz *.zip
+	rm -rf $(BIN_DIR) dist/
