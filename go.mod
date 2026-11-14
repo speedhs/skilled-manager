@@ -1,6 +1,6 @@
 module github.com/speedhs/skilled-manager
 
-go 1.25.0
+go 1.26.0
 
 require (
 	fyne.io/fyne/v2 v2.8.1
@@ -8,7 +8,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.44.0
-	golang.org/x/text v0.41.0
+	golang.org/x/text v0.44.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
