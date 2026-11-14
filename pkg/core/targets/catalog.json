@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "checked": "2026-11-14",
+  "targets": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "path": "~/.claude/skills",
+      "mode": "symlink",
+      "format": "skill",
+      "builtin": true,
+      "docs": "https://code.claude.com/docs/en/skills/"
+    },
+    {
+      "id": "codex",
+      "label": "Codex CLI",
+      "path": "~/.agents/skills",
+      "mode": "symlink",
+      "format": "skill",
+      "builtin": true,
+      "docs": "https://learn.chatgpt.com/docs/build-skills"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "path": "${XDG_CONFIG_HOME:-~/.config}/opencode/skills",
+      "mode": "symlink",
+      "format": "skill",
+      "builtin": true,
+      "docs": "https://opencode.ai/docs/skills/"
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "path": "~/.gemini/skills",
+      "mode": "symlink",
+      "format": "skill",
+      "builtin": true,
+      "docs": "https://geminicli.com/docs/cli/creating-skills/"
+    }
+  ]
+}

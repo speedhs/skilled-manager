@@ -10,95 +10,111 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// FileWatcher watches canonical and target directories for filesystem changes with debouncing.
+// FileWatcher watches the canonical store and target directories.
+// Notifications are debounced. Close is safe to call more than once.
 type FileWatcher struct {
-	watcher    *fsnotify.Watcher
-	m          *Manager
-	debounceMs time.Duration
-	notifyCh   chan struct{}
-	stopCh     chan struct{}
-	watchedMu  sync.Mutex
-	watched    map[string]bool
+	watcher   *fsnotify.Watcher
+	m         *Manager
+	debounce  time.Duration
+	notifyCh  chan struct{}
+	stopCh    chan struct{}
+	watchedMu sync.Mutex
+	watched   map[string]bool
+	once      sync.Once
+	onError   func(error)
+	timerMu   sync.Mutex
+	timer     *time.Timer
 }
 
-// NewFileWatcher creates a new file watcher for canonical and target directories.
-func NewFileWatcher(m *Manager, debounceDuration time.Duration) (*FileWatcher, error) {
-	if debounceDuration <= 0 {
-		debounceDuration = 250 * time.Millisecond
+// NewFileWatcher starts a debounced watcher. debounce <= 0 uses 250ms.
+func NewFileWatcher(m *Manager, debounce time.Duration) (*FileWatcher, error) {
+	if m == nil {
+		return nil, fmt.Errorf("%w: nil manager", ErrInvalidPath)
 	}
-
+	if debounce <= 0 {
+		debounce = 250 * time.Millisecond
+	}
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create fsnotify watcher: %w", err)
+		return nil, fmt.Errorf("create watcher: %w", err)
 	}
-
 	w := &FileWatcher{
-		watcher:    fw,
-		m:          m,
-		debounceMs: debounceDuration,
-		notifyCh:   make(chan struct{}, 1),
-		stopCh:     make(chan struct{}),
-		watched:    make(map[string]bool),
+		watcher:  fw,
+		m:        m,
+		debounce: debounce,
+		notifyCh: make(chan struct{}, 1),
+		stopCh:   make(chan struct{}),
+		watched:  map[string]bool{},
 	}
-
 	w.refreshWatchedPaths()
 	go w.watchLoop()
-
 	return w, nil
 }
 
-// NotifyChan returns a receive-only channel that receives a signal when a debounced change occurs.
-func (w *FileWatcher) NotifyChan() <-chan struct{} {
-	return w.notifyCh
+// NotifyChan receives one signal per debounced burst of changes.
+func (w *FileWatcher) NotifyChan() <-chan struct{} { return w.notifyCh }
+
+// SetErrorHandler receives watcher errors, including queue overflows.
+func (w *FileWatcher) SetErrorHandler(fn func(error)) {
+	w.watchedMu.Lock()
+	w.onError = fn
+	w.watchedMu.Unlock()
 }
 
-// Close stops the watcher and frees resources.
+// Close stops the watcher. A second call does nothing.
 func (w *FileWatcher) Close() error {
-	close(w.stopCh)
-	return w.watcher.Close()
+	var err error
+	w.once.Do(func() {
+		close(w.stopCh)
+		w.timerMu.Lock()
+		if w.timer != nil {
+			w.timer.Stop()
+		}
+		w.timerMu.Unlock()
+		err = w.watcher.Close()
+	})
+	return err
 }
 
-// RefreshPaths updates the set of paths being watched (e.g. when targets change or skills are added).
-func (w *FileWatcher) RefreshPaths() {
-	w.refreshWatchedPaths()
-}
+// RefreshPaths updates the watched set after targets or skills change.
+func (w *FileWatcher) RefreshPaths() { w.refreshWatchedPaths() }
 
 func (w *FileWatcher) refreshWatchedPaths() {
 	w.watchedMu.Lock()
 	defer w.watchedMu.Unlock()
-
-	pathsToWatch := make(map[string]bool)
-
-	// Watch canonical dir and subfolders
-	if info, err := os.Stat(w.m.CanonicalDir); err == nil && info.IsDir() {
-		_ = filepath.Walk(w.m.CanonicalDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil && info.IsDir() {
-				pathsToWatch[path] = true
+	want := map[string]bool{}
+	if info, err := os.Lstat(w.m.CanonicalDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		_ = filepath.WalkDir(w.m.CanonicalDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || !d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+				if d != nil && d.IsDir() && d.Type()&os.ModeSymlink != 0 {
+					return filepath.SkipDir
+				}
+				return nil
 			}
+			want[path] = true
 			return nil
 		})
 	}
-
-	// Watch target directories
 	for _, target := range w.m.GetTargets() {
-		targetDir := ExpandPath(target.Path)
-		if info, err := os.Stat(targetDir); err == nil && info.IsDir() {
-			pathsToWatch[targetDir] = true
+		dir, err := ExpandPath(target.Path)
+		if err != nil {
+			continue
 		}
+		info, err := os.Lstat(dir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		want[dir] = true
 	}
-
-	// Add new paths
-	for p := range pathsToWatch {
+	for p := range want {
 		if !w.watched[p] {
 			if err := w.watcher.Add(p); err == nil {
 				w.watched[p] = true
 			}
 		}
 	}
-
-	// Remove paths no longer in set
 	for p := range w.watched {
-		if !pathsToWatch[p] {
+		if !want[p] {
 			_ = w.watcher.Remove(p)
 			delete(w.watched, p)
 		}
@@ -106,44 +122,16 @@ func (w *FileWatcher) refreshWatchedPaths() {
 }
 
 func (w *FileWatcher) watchLoop() {
-	var timer *time.Timer
-	var timerMu sync.Mutex
-
-	triggerDebounce := func() {
-		timerMu.Lock()
-		defer timerMu.Unlock()
-
-		if timer != nil {
-			timer.Stop()
-		}
-
-		timer = time.AfterFunc(w.debounceMs, func() {
-			select {
-			case w.notifyCh <- struct{}{}:
-			default:
-				// Channel already has a pending notification
-			}
-		})
-	}
-
 	for {
 		select {
 		case <-w.stopCh:
-			timerMu.Lock()
-			if timer != nil {
-				timer.Stop()
-			}
-			timerMu.Unlock()
 			return
-
 		case event, ok := <-w.watcher.Events:
 			if !ok {
 				return
 			}
-
-			// If a new directory was created inside canonical, add it to watcher
 			if event.Op&fsnotify.Create == fsnotify.Create {
-				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+				if info, err := os.Lstat(event.Name); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 					w.watchedMu.Lock()
 					if !w.watched[event.Name] {
 						if err := w.watcher.Add(event.Name); err == nil {
@@ -153,16 +141,37 @@ func (w *FileWatcher) watchLoop() {
 					w.watchedMu.Unlock()
 				}
 			}
-
-			// Trigger debounced notification for write/create/remove/rename
 			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
-				triggerDebounce()
+				w.arm()
 			}
-
-		case _, ok := <-w.watcher.Errors:
+		case err, ok := <-w.watcher.Errors:
 			if !ok {
 				return
 			}
+			if err == nil {
+				continue
+			}
+			w.watchedMu.Lock()
+			fn := w.onError
+			w.watchedMu.Unlock()
+			if fn != nil {
+				fn(err)
+			}
 		}
 	}
+}
+
+func (w *FileWatcher) arm() {
+	w.timerMu.Lock()
+	defer w.timerMu.Unlock()
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.timer = time.AfterFunc(w.debounce, func() {
+		select {
+		case <-w.stopCh:
+		case w.notifyCh <- struct{}{}:
+		default:
+		}
+	})
 }

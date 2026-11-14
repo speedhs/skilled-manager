@@ -1,23 +1,29 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
-// StatusCode represents the state of a skill for a given target.
+// StatusCode is the deployment state of one skill on one target.
 type StatusCode string
 
 const (
-	StatusEnabled  StatusCode = "enabled"
+	// StatusEnabled means the deployment matches the canonical skill.
+	StatusEnabled StatusCode = "enabled"
+	// StatusDisabled means nothing is deployed at the destination.
 	StatusDisabled StatusCode = "disabled"
+	// StatusConflict means the destination is not ours, or both sides changed.
 	StatusConflict StatusCode = "conflict"
-	StatusDrifted  StatusCode = "drifted"
-	StatusBroken   StatusCode = "broken"
+	// StatusDrifted means the canonical skill changed and the deployment did not.
+	StatusDrifted StatusCode = "drifted"
+	// StatusBroken means a symlink is unreadable or its canonical target is gone.
+	StatusBroken StatusCode = "broken"
 )
 
-// CellStatus provides detailed status information for a (skill, target) pair.
+// CellStatus is the status of one skill on one target.
 type CellStatus struct {
 	Code         StatusCode `json:"code"`
 	Message      string     `json:"message"`
@@ -27,146 +33,161 @@ type CellStatus struct {
 	ModeFallback bool       `json:"mode_fallback,omitempty"`
 }
 
-// GetTargetDestinationPath computes the target path for a given skill and target config.
-func GetTargetDestinationPath(target Target, skillName string) string {
-	targetDir := ExpandPath(target.Path)
-	if target.Format == FormatGeminiTOML {
-		return filepath.Join(targetDir, skillName+".toml")
+// Status reports the deployment state of skillName on targetID.
+func (m *Manager) Status(ctx context.Context, skillName, targetID string) (CellStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return CellStatus{}, err
 	}
-	return filepath.Join(targetDir, skillName)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.statusLocked(skillName, targetID)
 }
 
-// Status evaluates the current status of a skill for a target.
-func (m *Manager) Status(skillName string, targetID string) (CellStatus, error) {
-	target, exists := m.GetTargetByID(targetID)
-	if !exists {
-		return CellStatus{}, fmt.Errorf("target %q not found", targetID)
+func (m *Manager) statusLocked(skillName, targetID string) (CellStatus, error) {
+	target, ok := m.targetByID(targetID)
+	if !ok {
+		return CellStatus{}, fmt.Errorf("%w: target %q", ErrNotFound, targetID)
 	}
-
-	canonicalSkillPath := filepath.Join(m.CanonicalDir, skillName)
-	destPath := GetTargetDestinationPath(target, skillName)
-
-	status := CellStatus{
-		ActualPath: destPath,
+	if err := ValidateSkillName(skillName); err != nil {
+		return CellStatus{}, err
 	}
-
-	// Check if destination path exists
-	lstat, err := os.Lstat(destPath)
+	dest, err := GetTargetDestinationPath(target, skillName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			status.Code = StatusDisabled
-			status.Message = "Not installed in target"
-			return status, nil
-		}
-		return CellStatus{}, fmt.Errorf("failed to inspect target path %s: %w", destPath, err)
+		return CellStatus{}, err
 	}
-
-	// 1. Check if it is a symbolic link
-	if lstat.Mode()&os.ModeSymlink != 0 {
-		status.IsSymlink = true
-		linkTarget, err := os.Readlink(destPath)
-		if err != nil {
-			status.Code = StatusBroken
-			status.Message = fmt.Sprintf("Broken symlink (cannot read link target): %v", err)
-			return status, nil
-		}
-
-		if !filepath.IsAbs(linkTarget) {
-			linkTarget = filepath.Join(filepath.Dir(destPath), linkTarget)
-		}
-		status.LinkTarget = linkTarget
-
-		if PathsReferToSameLocation(linkTarget, canonicalSkillPath) {
-			// Symlink points to our canonical skill folder
-			if _, err := os.Stat(canonicalSkillPath); os.IsNotExist(err) {
-				status.Code = StatusBroken
-				status.Message = fmt.Sprintf("Symlink points to non-existent canonical skill: %s", canonicalSkillPath)
-				return status, nil
-			}
-			status.Code = StatusEnabled
-			status.Message = "Symlinked to canonical skill"
-			return status, nil
-		}
-
-		// Symlink exists but points elsewhere -> Conflict
-		status.Code = StatusConflict
-		status.Message = fmt.Sprintf("Collision: Symlink points to %s instead of canonical %s", linkTarget, canonicalSkillPath)
-		return status, nil
+	canonical, err := skillDir(m.CanonicalDir, skillName)
+	if err != nil {
+		return CellStatus{}, err
 	}
-
-	// 2. Target exists as a regular file or directory (not a symlink)
-	state := m.GetState()
-	record, isTracked := state.GetRecord(target.ID, skillName)
-
-	// Case 2A: Gemini TOML format
+	st := CellStatus{ActualPath: dest}
+	info, err := m.files().Lstat(dest)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			st.Code = StatusDisabled
+			st.Message = "Not installed in target"
+			return st, nil
+		}
+		return CellStatus{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return m.symlinkStatus(st, dest, canonical)
+	}
+	rec, tracked := m.state.GetRecord(target.ID, skillName)
+	if !tracked {
+		st.Code = StatusConflict
+		st.Message = fmt.Sprintf("collision: %s exists and is not managed by Skills Manager", dest)
+		return st, nil
+	}
+	st.ModeFallback = rec.Fallback
 	if target.Format == FormatGeminiTOML {
-		if !isTracked {
-			status.Code = StatusConflict
-			status.Message = fmt.Sprintf("Collision: File %s already exists and is not managed by Skills Manager", destPath)
-			return status, nil
-		}
-
-		// Parse canonical skill
-		canonicalSkill, err := ParseSkill(canonicalSkillPath)
-		if err != nil {
-			status.Code = StatusBroken
-			status.Message = fmt.Sprintf("Canonical skill error: %v", err)
-			return status, nil
-		}
-
-		actualContent, err := os.ReadFile(destPath)
-		if err != nil {
-			status.Code = StatusBroken
-			status.Message = fmt.Sprintf("Cannot read destination TOML file: %v", err)
-			return status, nil
-		}
-
-		if IsGeminiTOMLMatch(*canonicalSkill, string(actualContent)) {
-			status.Code = StatusEnabled
-			status.Message = "Gemini TOML command is active and synchronized"
-			return status, nil
-		}
-
-		status.Code = StatusDrifted
-		status.Message = "Gemini TOML file differs from canonical SKILL.md (sync needed)"
-		return status, nil
+		return m.tomlStatus(st, canonical, dest, rec)
 	}
+	return m.copyStatus(st, canonical, dest, rec)
+}
 
-	// Case 2B: Mode copy or symlink fallback to copy
-	if isTracked {
-		status.ModeFallback = record.Fallback
-
-		canonicalHash, err := HashDirectory(canonicalSkillPath)
-		if err != nil {
-			status.Code = StatusBroken
-			status.Message = fmt.Sprintf("Canonical skill error: %v", err)
-			return status, nil
-		}
-
-		destHash, err := HashDirectory(destPath)
-		if err != nil {
-			status.Code = StatusBroken
-			status.Message = fmt.Sprintf("Cannot hash target directory: %v", err)
-			return status, nil
-		}
-
-		if canonicalHash == destHash {
-			status.Code = StatusEnabled
-			if record.Fallback {
-				status.Message = "Active via copy fallback (synchronized)"
-			} else {
-				status.Message = "Active copy (synchronized)"
-			}
-			return status, nil
-		}
-
-		status.Code = StatusDrifted
-		status.Message = "Target copy differs from canonical skill (drift detected, sync needed)"
-		return status, nil
+func (m *Manager) symlinkStatus(st CellStatus, dest, canonical string) (CellStatus, error) {
+	st.IsSymlink = true
+	raw, err := m.files().Readlink(dest)
+	if err != nil {
+		st.Code = StatusBroken
+		st.Message = fmt.Sprintf("symlink at %s cannot be read: %v", dest, err)
+		return st, nil
 	}
+	st.LinkTarget = resolveLink(dest, raw)
+	if !linksTo(dest, raw, canonical) {
+		st.Code = StatusConflict
+		st.Message = fmt.Sprintf("collision: symlink %s points to %s, not %s", dest, st.LinkTarget, canonical)
+		return st, nil
+	}
+	if _, err := os.Lstat(canonical); err != nil {
+		st.Code = StatusBroken
+		st.Message = fmt.Sprintf("symlink points at missing canonical skill %s", canonical)
+		return st, nil
+	}
+	st.Code = StatusEnabled
+	st.Message = "symlinked to the canonical skill"
+	return st, nil
+}
 
-	// Not tracked and not a symlink to canonical -> Conflict
-	status.Code = StatusConflict
-	status.Message = fmt.Sprintf("Collision: Path %s already exists and is not managed by Skills Manager", destPath)
-	return status, nil
+func (m *Manager) tomlStatus(st CellStatus, canonical, dest string, rec TargetRecord) (CellStatus, error) {
+	skill, err := ParseSkill(canonical)
+	if err != nil {
+		st.Code = StatusBroken
+		st.Message = err.Error()
+		return st, nil
+	}
+	body, err := m.files().ReadFile(dest)
+	if err != nil {
+		st.Code = StatusBroken
+		st.Message = err.Error()
+		return st, nil
+	}
+	if IsGeminiTOMLMatch(*skill, string(body)) {
+		st.Code = StatusEnabled
+		st.Message = "Gemini TOML command matches the canonical skill"
+		return st, nil
+	}
+	fileHash := HashString(string(body))
+	canHash, err := HashDirectory(canonical)
+	if err != nil {
+		st.Code = StatusBroken
+		st.Message = err.Error()
+		return st, nil
+	}
+	return classifyDrift(st, rec, canHash, fileHash, "Gemini TOML"), nil
+}
+
+func (m *Manager) copyStatus(st CellStatus, canonical, dest string, rec TargetRecord) (CellStatus, error) {
+	canHash, err := HashDirectory(canonical)
+	if err != nil {
+		st.Code = StatusBroken
+		st.Message = err.Error()
+		return st, nil
+	}
+	dstHash, err := HashDirectory(dest)
+	if err != nil {
+		st.Code = StatusBroken
+		st.Message = err.Error()
+		return st, nil
+	}
+	if canHash == dstHash {
+		st.Code = StatusEnabled
+		if rec.Fallback {
+			st.Message = "copy fallback matches the canonical skill"
+		} else {
+			st.Message = "copy matches the canonical skill"
+		}
+		return st, nil
+	}
+	return classifyDrift(st, rec, canHash, dstHash, "copy"), nil
+}
+
+// classifyDrift decides who changed since the record was written.
+// A legacy record with an empty baseline is a conflict when the two sides
+// differ, because there is no safe way to pick one.
+func classifyDrift(st CellStatus, rec TargetRecord, canHash, dstHash, kind string) CellStatus {
+	if rec.CanonicalHash == "" || rec.Hash == "" {
+		st.Code = StatusConflict
+		st.Message = fmt.Sprintf("collision: %s changed and the state record has no baseline hash; not overwriting", kind)
+		return st
+	}
+	canChanged := canHash != rec.CanonicalHash
+	dstChanged := dstHash != rec.Hash
+	switch {
+	case canChanged && dstChanged:
+		st.Code = StatusConflict
+		st.Message = fmt.Sprintf("conflict: both the canonical skill and the %s changed", kind)
+	case dstChanged:
+		st.Code = StatusConflict
+		st.Message = fmt.Sprintf("conflict: the %s was edited and the canonical skill was not", kind)
+	case canChanged:
+		st.Code = StatusDrifted
+		st.Message = fmt.Sprintf("%s is behind the canonical skill", kind)
+	default:
+		// The two hashes differ, but neither differs from the stored baseline.
+		// That ledger cannot be trusted, so this is a conflict.
+		st.Code = StatusConflict
+		st.Message = fmt.Sprintf("conflict: %s does not match the canonical skill and the baseline hashes disagree", kind)
+	}
+	return st
 }

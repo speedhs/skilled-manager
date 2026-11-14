@@ -3,6 +3,7 @@ package core
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,7 +145,7 @@ func TestEnableDisableSymlinkMode(t *testing.T) {
 	}
 
 	// Status before enable should be disabled
-	status, err := mgr.Status(skill.Name, "claude")
+	status, err := mgr.Status(context.Background(), skill.Name, "claude")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestEnableDisableSymlinkMode(t *testing.T) {
 	}
 
 	// Enable for Claude (Symlink mode)
-	res, err := mgr.Enable(skill.Name, "claude")
+	res, err := mgr.Enable(context.Background(), skill.Name, "claude")
 	if err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestEnableDisableSymlinkMode(t *testing.T) {
 	}
 
 	// Status after enable should be enabled
-	status, err = mgr.Status(skill.Name, "claude")
+	status, err = mgr.Status(context.Background(), skill.Name, "claude")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -174,13 +175,13 @@ func TestEnableDisableSymlinkMode(t *testing.T) {
 	}
 
 	// Disable for Claude
-	err = mgr.Disable(skill.Name, "claude")
+	err = mgr.Disable(context.Background(), skill.Name, "claude")
 	if err != nil {
 		t.Fatalf("disable failed: %v", err)
 	}
 
 	// Status should be disabled again
-	status, err = mgr.Status(skill.Name, "claude")
+	status, err = mgr.Status(context.Background(), skill.Name, "claude")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestEnableDisableCopyMode(t *testing.T) {
 	}
 
 	// Enable for OpenCode (Copy mode)
-	res, err := mgr.Enable(skill.Name, "opencode")
+	res, err := mgr.Enable(context.Background(), skill.Name, "opencode")
 	if err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestEnableDisableCopyMode(t *testing.T) {
 	}
 
 	// Check status is enabled
-	status, err := mgr.Status(skill.Name, "opencode")
+	status, err := mgr.Status(context.Background(), skill.Name, "opencode")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -221,12 +222,12 @@ func TestEnableDisableCopyMode(t *testing.T) {
 	}
 
 	// Disable
-	err = mgr.Disable(skill.Name, "opencode")
+	err = mgr.Disable(context.Background(), skill.Name, "opencode")
 	if err != nil {
 		t.Fatalf("disable failed: %v", err)
 	}
 
-	status, err = mgr.Status(skill.Name, "opencode")
+	status, err = mgr.Status(context.Background(), skill.Name, "opencode")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestEnableDisableGeminiTOML(t *testing.T) {
 	}
 
 	// Enable for Gemini CLI
-	res, err := mgr.Enable(skill.Name, "gemini")
+	res, err := mgr.Enable(context.Background(), skill.Name, "gemini")
 	if err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestEnableDisableGeminiTOML(t *testing.T) {
 	}
 
 	// Check status
-	status, err := mgr.Status(skill.Name, "gemini")
+	status, err := mgr.Status(context.Background(), skill.Name, "gemini")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -267,12 +268,12 @@ func TestEnableDisableGeminiTOML(t *testing.T) {
 	}
 
 	// Disable
-	err = mgr.Disable(skill.Name, "gemini")
+	err = mgr.Disable(context.Background(), skill.Name, "gemini")
 	if err != nil {
 		t.Fatalf("disable failed: %v", err)
 	}
 
-	status, err = mgr.Status(skill.Name, "gemini")
+	status, err = mgr.Status(context.Background(), skill.Name, "gemini")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -291,7 +292,10 @@ func TestCollisionRefusal(t *testing.T) {
 
 	targets := mgr.GetTargets()
 	claudeTarget := targets[0]
-	targetDir := ExpandPath(claudeTarget.Path)
+	targetDir, err := ExpandPath(claudeTarget.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = os.MkdirAll(targetDir, 0755)
 
 	// User manually created a folder with collision-skill name
@@ -302,7 +306,7 @@ func TestCollisionRefusal(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(foreignDir, "manual.txt"), []byte("manual file"), 0644)
 
 	// Status should report collision/conflict
-	status, err := mgr.Status(skill.Name, "claude")
+	status, err := mgr.Status(context.Background(), skill.Name, "claude")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -311,7 +315,7 @@ func TestCollisionRefusal(t *testing.T) {
 	}
 
 	// Attempting to enable MUST be refused
-	_, err = mgr.Enable(skill.Name, "claude")
+	_, err = mgr.Enable(context.Background(), skill.Name, "claude")
 	if err == nil {
 		t.Fatal("expected Enable to fail on collision, but it succeeded")
 	}
@@ -320,7 +324,7 @@ func TestCollisionRefusal(t *testing.T) {
 	}
 
 	// Attempting to disable MUST NOT delete foreign directory
-	err = mgr.Disable(skill.Name, "claude")
+	err = mgr.Disable(context.Background(), skill.Name, "claude")
 	if err == nil {
 		t.Fatal("expected Disable to refuse deleting unmanaged directory, but got nil")
 	}
@@ -338,19 +342,19 @@ func TestDriftDetection(t *testing.T) {
 	}
 
 	// Enable for OpenCode (copy mode)
-	_, err = mgr.Enable(skill.Name, "opencode")
+	_, err = mgr.Enable(context.Background(), skill.Name, "opencode")
 	if err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
 
 	// Enable for Gemini (gemini-toml)
-	_, err = mgr.Enable(skill.Name, "gemini")
+	_, err = mgr.Enable(context.Background(), skill.Name, "gemini")
 	if err != nil {
 		t.Fatalf("enable gemini failed: %v", err)
 	}
 
 	// Initial status should be enabled
-	status, _ := mgr.Status(skill.Name, "opencode")
+	status, _ := mgr.Status(context.Background(), skill.Name, "opencode")
 	if status.Code != StatusEnabled {
 		t.Fatalf("expected enabled, got %s", status.Code)
 	}
@@ -369,7 +373,7 @@ description: Drift test updated description
 	}
 
 	// OpenCode status should now be drifted!
-	status, err = mgr.Status(skill.Name, "opencode")
+	status, err = mgr.Status(context.Background(), skill.Name, "opencode")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -378,7 +382,7 @@ description: Drift test updated description
 	}
 
 	// Gemini status should now be drifted!
-	status, err = mgr.Status(skill.Name, "gemini")
+	status, err = mgr.Status(context.Background(), skill.Name, "gemini")
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
@@ -387,7 +391,7 @@ description: Drift test updated description
 	}
 
 	// Sync should fix drift
-	report, err := mgr.Sync()
+	report, err := mgr.Sync(context.Background())
 	if err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
@@ -396,11 +400,11 @@ description: Drift test updated description
 	}
 
 	// Status should be enabled again
-	status, _ = mgr.Status(skill.Name, "opencode")
+	status, _ = mgr.Status(context.Background(), skill.Name, "opencode")
 	if status.Code != StatusEnabled {
 		t.Errorf("expected StatusEnabled after sync, got %s", status.Code)
 	}
-	status, _ = mgr.Status(skill.Name, "gemini")
+	status, _ = mgr.Status(context.Background(), skill.Name, "gemini")
 	if status.Code != StatusEnabled {
 		t.Errorf("expected StatusEnabled for gemini after sync, got %s", status.Code)
 	}
@@ -410,8 +414,14 @@ func TestImportExistingSkills(t *testing.T) {
 	mgr, canonicalDir, _ := setupTestEnv(t)
 
 	targets := mgr.GetTargets()
-	claudeDir := ExpandPath(targets[0].Path)
-	geminiDir := ExpandPath(targets[3].Path)
+	claudeDir, err := ExpandPath(targets[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geminiDir, err := ExpandPath(targets[3].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = os.MkdirAll(claudeDir, 0755)
 	_ = os.MkdirAll(geminiDir, 0755)
 
@@ -438,7 +448,7 @@ Gemini prompt instructions
 	_ = os.WriteFile(geminiTOMLPath, []byte(geminiTOMLContent), 0644)
 
 	// Scan candidates
-	candidates, err := mgr.ScanImportCandidates()
+	candidates, err := mgr.ScanImportCandidates(context.Background())
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
@@ -448,7 +458,7 @@ Gemini prompt instructions
 	}
 
 	// Import all candidates
-	imported, errs := mgr.ImportSelected(candidates)
+	imported, errs := mgr.ImportSelected(context.Background(), candidates)
 	if len(errs) > 0 {
 		t.Fatalf("import errors: %v", errs)
 	}
@@ -466,12 +476,12 @@ Gemini prompt instructions
 	}
 
 	// Verify statuses are now enabled in their respective targets
-	status, err := mgr.Status("untracked-claude-skill", "claude")
+	status, err := mgr.Status(context.Background(), "untracked-claude-skill", "claude")
 	if err != nil || status.Code != StatusEnabled {
 		t.Errorf("expected untracked-claude-skill to be enabled on claude, got code=%s, err=%v", status.Code, err)
 	}
 
-	status, err = mgr.Status("untracked-gemini", "gemini")
+	status, err = mgr.Status(context.Background(), "untracked-gemini", "gemini")
 	if err != nil || status.Code != StatusEnabled {
 		t.Errorf("expected untracked-gemini to be enabled on gemini, got code=%s, err=%v", status.Code, err)
 	}
@@ -495,7 +505,7 @@ func TestExportZip(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(scriptsDir, "helper.sh"), []byte("#!/bin/sh\necho hello"), 0755)
 
 	var buf bytes.Buffer
-	err = mgr.ExportZip([]string{}, &buf)
+	err = mgr.ExportZip(context.Background(), []string{}, &buf)
 	if err != nil {
 		t.Fatalf("export zip failed: %v", err)
 	}

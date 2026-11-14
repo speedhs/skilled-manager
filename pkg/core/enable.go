@@ -1,273 +1,518 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
-// EnableResult provides details on the enable action performed.
+// EnableResult describes one successful enable.
 type EnableResult struct {
-	SkillName    string
-	TargetID     string
-	TargetPath   string
-	Mode         string
-	Fallback     bool
-	Message      string
-	RecordedHash string
+	SkillName    string `json:"skill_name"`
+	TargetID     string `json:"target_id"`
+	TargetPath   string `json:"target_path"`
+	Mode         string `json:"mode"`
+	Fallback     bool   `json:"fallback,omitempty"`
+	Message      string `json:"message"`
+	RecordedHash string `json:"recorded_hash,omitempty"`
+	DryRun       bool   `json:"dry_run,omitempty"`
 }
 
-// Enable activates a canonical skill for a specific target.
-func (m *Manager) Enable(skillName, targetID string) (*EnableResult, error) {
-	target, exists := m.GetTargetByID(targetID)
-	if !exists {
-		return nil, fmt.Errorf("target %q not found", targetID)
-	}
+// Enable deploys skillName to targetID.
+// A conflict is returned as ErrConflict and the destination is not modified.
+func (m *Manager) Enable(ctx context.Context, skillName, targetID string) (*EnableResult, error) {
+	var res *EnableResult
+	err := m.mutate(ctx, func() error {
+		var err error
+		res, err = m.enableLocked(ctx, skillName, targetID)
+		return err
+	})
+	return res, err
+}
 
-	canonicalSkillPath := filepath.Join(m.CanonicalDir, skillName)
-	canonicalSkill, err := ParseSkill(canonicalSkillPath)
+func (m *Manager) enableLocked(ctx context.Context, skillName, targetID string) (*EnableResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	target, ok := m.targetByID(targetID)
+	if !ok {
+		return nil, fmt.Errorf("%w: target %q", ErrNotFound, targetID)
+	}
+	canonical, err := skillDir(m.CanonicalDir, skillName)
 	if err != nil {
-		return nil, fmt.Errorf("cannot enable skill %q: invalid or missing canonical skill: %w", skillName, err)
+		return nil, err
 	}
-
-	destPath := GetTargetDestinationPath(target, skillName)
-
-	// Check status to enforce collision rule
-	status, err := m.Status(skillName, targetID)
+	if _, err := ParseSkill(canonical); err != nil {
+		return nil, err
+	}
+	dest, err := GetTargetDestinationPath(target, skillName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check status: %w", err)
+		return nil, err
 	}
-
-	if status.Code == StatusConflict {
-		return nil, fmt.Errorf("cannot enable %q on %s: %s", skillName, target.Label, status.Message)
+	st, err := m.statusLocked(skillName, targetID)
+	if err != nil {
+		return nil, err
 	}
-
-	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return nil, fmt.Errorf("failed to create target directory %s: %w", filepath.Dir(destPath), err)
+	if st.Code == StatusConflict {
+		return nil, fmt.Errorf("%w: collision at %s: %s", ErrConflict, dest, st.Message)
 	}
-
-	result := &EnableResult{
-		SkillName:  skillName,
-		TargetID:   targetID,
-		TargetPath: destPath,
+	if st.Code == StatusEnabled {
+		return &EnableResult{
+			SkillName: skillName, TargetID: targetID, TargetPath: dest,
+			Mode: target.Mode, Message: "already enabled",
+		}, nil
 	}
+	if m.dryRun {
+		return &EnableResult{
+			SkillName: skillName, TargetID: targetID, TargetPath: dest,
+			Mode: target.Mode, DryRun: true,
+			Message: "dry-run: would enable (" + string(st.Code) + ")",
+		}, nil
+	}
+	if err := m.files().MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return nil, err
+	}
+	switch {
+	case target.Format == FormatGeminiTOML:
+		return m.enableTOML(target, skillName, canonical, dest, st)
+	case target.Mode == ModeCopy:
+		return m.enableCopy(target, skillName, canonical, dest, st)
+	case target.Mode == ModeSymlink:
+		return m.enableSymlink(target, skillName, canonical, dest, st)
+	default:
+		return nil, fmt.Errorf("%w: mode %q", ErrInvalidPath, target.Mode)
+	}
+}
 
-	// Handle Gemini TOML format
-	if target.Format == FormatGeminiTOML {
-		tomlStr, err := SkillToGeminiTOML(*canonicalSkill)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate Gemini TOML: %w", err)
+func (m *Manager) enableSymlink(target Target, skillName, canonical, dest string, st CellStatus) (*EnableResult, error) {
+	switch st.Code {
+	case StatusBroken:
+		raw, err := m.files().Readlink(dest)
+		if err != nil || !linksTo(dest, raw, canonical) {
+			return nil, fmt.Errorf("%w: refusing to replace %s", ErrConflict, dest)
 		}
-
-		if err := os.WriteFile(destPath, []byte(tomlStr), 0644); err != nil {
-			return nil, fmt.Errorf("failed to write Gemini TOML to %s: %w", destPath, err)
+		if err := m.files().Remove(dest); err != nil {
+			return nil, err
 		}
-
-		contentHash := HashString(tomlStr)
-		m.GetState().SetRecord(targetID, skillName, TargetRecord{
-			Mode:   ModeCopy,
-			Format: FormatGeminiTOML,
-			Hash:   contentHash,
-			Path:   destPath,
-		})
-
-		if err := m.SaveState(); err != nil {
-			return nil, fmt.Errorf("failed to save state: %w", err)
+	case StatusDrifted:
+		rec, ok := m.state.GetRecord(target.ID, skillName)
+		if !ok {
+			return nil, fmt.Errorf("%w: missing state for %s", ErrConflict, dest)
 		}
-
-		result.Mode = ModeCopy
-		result.RecordedHash = contentHash
-		result.Message = "Generated Gemini TOML command"
-		return result, nil
-	}
-
-	// Handle Symlink Mode
-	if target.Mode == ModeSymlink {
-		// If already exists and is our symlink or tracked copy, remove old link/dir before recreating
-		if status.Code == StatusEnabled || status.Code == StatusBroken || status.Code == StatusDrifted {
-			if isSym, _, _ := IsSymlink(destPath); isSym {
-				_ = os.Remove(destPath)
-			} else if m.GetState().IsTracked(targetID, skillName) {
-				_ = os.RemoveAll(destPath)
-			}
+		if _, err := m.backupLocked(target.ID, skillName, dest); err != nil {
+			return nil, err
 		}
-
-		linkRes, err := CreateSymlinkOrFallback(canonicalSkillPath, destPath)
+		id, _, err := authorizeDelete(m.files(), dest, rec)
 		if err != nil {
 			return nil, err
 		}
-
-		var currentHash string
-		if linkRes.Type == LinkTypeCopy {
-			currentHash, _ = HashDirectory(canonicalSkillPath)
+		if err := m.files().RemoveTree(dest, id); err != nil {
+			return nil, err
 		}
-
-		m.GetState().SetRecord(targetID, skillName, TargetRecord{
-			Mode:     string(linkRes.Type),
-			Format:   FormatSkill,
-			Hash:     currentHash,
-			Path:     destPath,
-			Fallback: linkRes.Fallback,
-		})
-
-		if err := m.SaveState(); err != nil {
-			return nil, fmt.Errorf("failed to save state: %w", err)
-		}
-
-		result.Mode = string(linkRes.Type)
-		result.Fallback = linkRes.Fallback
-		result.RecordedHash = currentHash
-		result.Message = linkRes.Message
-		return result, nil
+	case StatusDisabled:
+		// Destination is absent. Symlink fails if that stops being true.
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrConflict, st.Message)
 	}
-
-	// Handle Copy Mode
-	if target.Mode == ModeCopy {
-		if status.Code == StatusEnabled || status.Code == StatusDrifted {
-			if m.GetState().IsTracked(targetID, skillName) {
-				_ = os.RemoveAll(destPath)
-			}
-		}
-
-		if err := CopyDirectory(canonicalSkillPath, destPath); err != nil {
-			return nil, fmt.Errorf("failed to copy skill to %s: %w", destPath, err)
-		}
-
-		canonicalHash, err := HashDirectory(canonicalSkillPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to hash canonical skill directory: %w", err)
-		}
-
-		m.GetState().SetRecord(targetID, skillName, TargetRecord{
-			Mode:   ModeCopy,
-			Format: FormatSkill,
-			Hash:   canonicalHash,
-			Path:   destPath,
-		})
-
-		if err := m.SaveState(); err != nil {
-			return nil, fmt.Errorf("failed to save state: %w", err)
-		}
-
-		result.Mode = ModeCopy
-		result.RecordedHash = canonicalHash
-		result.Message = "Copied skill directory"
-		return result, nil
-	}
-
-	return nil, fmt.Errorf("unsupported mode %q for target %q", target.Mode, targetID)
-}
-
-// Disable deactivates a skill for a specific target, safely removing only files created by Skills Manager.
-func (m *Manager) Disable(skillName, targetID string) error {
-	target, exists := m.GetTargetByID(targetID)
-	if !exists {
-		return fmt.Errorf("target %q not found", targetID)
-	}
-
-	canonicalSkillPath := filepath.Join(m.CanonicalDir, skillName)
-	destPath := GetTargetDestinationPath(target, skillName)
-
-	lstat, err := os.Lstat(destPath)
+	link, err := m.linkCanonical(canonical, dest)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Already gone; clean state if present
-			m.GetState().DeleteRecord(targetID, skillName)
-			return m.SaveState()
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("%w: collision at %s", ErrConflict, dest)
 		}
-		return fmt.Errorf("failed to inspect %s: %w", destPath, err)
+		return nil, err
 	}
+	res := &EnableResult{
+		SkillName: skillName, TargetID: target.ID, TargetPath: dest,
+		Mode: string(link.Type), Fallback: link.Fallback, Message: link.Message,
+	}
+	if err := m.recordDeployment(target, skillName, dest, string(link.Type), link.Fallback); err != nil {
+		if link.Type == LinkTypeSymlink || link.Type == LinkTypeJunction {
+			_ = m.files().Remove(dest)
+		} else if id, idErr := m.files().Identity(dest); idErr == nil {
+			_ = m.files().RemoveTree(dest, id)
+		}
+		return nil, err
+	}
+	if rec, ok := m.state.GetRecord(target.ID, skillName); ok {
+		res.RecordedHash = rec.Hash
+	}
+	return res, nil
+}
 
-	// Safety check 1: Symlink check
-	if lstat.Mode()&os.ModeSymlink != 0 {
-		linkTarget, err := os.Readlink(destPath)
-		if err == nil {
-			if !filepath.IsAbs(linkTarget) {
-				linkTarget = filepath.Join(filepath.Dir(destPath), linkTarget)
+func (m *Manager) linkCanonical(canonical, dest string) (LinkResult, error) {
+	if err := m.files().Symlink(canonical, dest); err != nil {
+		return linkFallback(m.files(), canonical, dest, err)
+	}
+	return LinkResult{Type: LinkTypeSymlink, Message: "symlink created"}, nil
+}
+
+func (m *Manager) enableCopy(target Target, skillName, canonical, dest string, st CellStatus) (*EnableResult, error) {
+	switch st.Code {
+	case StatusDisabled:
+		staging, err := m.stageCopy(canonical)
+		if err != nil {
+			return nil, err
+		}
+		if err := m.publishNew(staging, dest); err != nil {
+			return nil, err
+		}
+	case StatusDrifted:
+		rec, ok := m.state.GetRecord(target.ID, skillName)
+		if !ok {
+			return nil, fmt.Errorf("%w: missing state for %s", ErrConflict, dest)
+		}
+		if err := m.replaceTree(target, skillName, canonical, dest, rec); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrConflict, st.Message)
+	}
+	if err := m.recordDeployment(target, skillName, dest, ModeCopy, false); err != nil {
+		if st.Code == StatusDisabled {
+			if id, idErr := m.files().Identity(dest); idErr == nil {
+				_ = m.files().RemoveTree(dest, id)
 			}
-			if !PathsReferToSameLocation(linkTarget, canonicalSkillPath) {
-				return fmt.Errorf("refusing to remove %s: symlink points to %s, not canonical skill %s", destPath, linkTarget, canonicalSkillPath)
+		}
+		return nil, err
+	}
+	res := &EnableResult{
+		SkillName: skillName, TargetID: target.ID, TargetPath: dest,
+		Mode: ModeCopy, Message: "copied skill directory",
+	}
+	if rec, ok := m.state.GetRecord(target.ID, skillName); ok {
+		res.RecordedHash = rec.Hash
+	}
+	return res, nil
+}
+
+func (m *Manager) enableTOML(target Target, skillName, canonical, dest string, st CellStatus) (*EnableResult, error) {
+	skill, err := ParseSkill(canonical)
+	if err != nil {
+		return nil, err
+	}
+	text, err := SkillToGeminiTOML(*skill)
+	if err != nil {
+		return nil, err
+	}
+	data := []byte(text)
+	switch st.Code {
+	case StatusDisabled:
+		if err := m.files().WriteFileExclusive(dest, data, 0o644); err != nil {
+			if os.IsExist(err) {
+				return nil, fmt.Errorf("%w: collision at %s", ErrConflict, dest)
+			}
+			return nil, err
+		}
+	case StatusDrifted:
+		rec, ok := m.state.GetRecord(target.ID, skillName)
+		if !ok {
+			return nil, fmt.Errorf("%w: missing state for %s", ErrConflict, dest)
+		}
+		if _, _, err := authorizeDelete(m.files(), dest, rec); err != nil {
+			return nil, err
+		}
+		if _, err := m.backupLocked(target.ID, skillName, dest); err != nil {
+			return nil, err
+		}
+		if err := m.files().WriteFileAtomic(dest, data, 0o644); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrConflict, st.Message)
+	}
+	if err := m.recordDeployment(target, skillName, dest, ModeCopy, false); err != nil {
+		if st.Code == StatusDisabled {
+			if id, idErr := m.files().Identity(dest); idErr == nil {
+				_ = m.files().RemoveTree(dest, id)
 			}
 		}
-		if err := os.Remove(destPath); err != nil {
-			return fmt.Errorf("failed to remove symlink %s: %w", destPath, err)
-		}
-		m.GetState().DeleteRecord(targetID, skillName)
-		return m.SaveState()
+		return nil, err
 	}
-
-	// Safety check 2: Regular file or directory must be tracked in state.json
-	if !m.GetState().IsTracked(targetID, skillName) {
-		return fmt.Errorf("refusing to remove %s: target exists but is not tracked in state.json and not a symlink to canonical store (collision protection)", destPath)
+	res := &EnableResult{
+		SkillName: skillName, TargetID: target.ID, TargetPath: dest,
+		Mode: ModeCopy, Message: "generated Gemini TOML command", RecordedHash: HashString(text),
 	}
+	return res, nil
+}
 
+func (m *Manager) recordDeployment(target Target, skillName, dest, mode string, fallback bool) error {
+	id, err := m.files().Identity(dest)
+	if err != nil {
+		return err
+	}
+	var hash, canHash string
 	if target.Format == FormatGeminiTOML {
-		if err := os.Remove(destPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove Gemini TOML file %s: %w", destPath, err)
+		body, err := m.files().ReadFile(dest)
+		if err != nil {
+			return err
 		}
+		hash = HashString(string(body))
+	} else if mode == string(LinkTypeSymlink) || mode == string(LinkTypeJunction) {
+		hash = ""
 	} else {
-		if err := os.RemoveAll(destPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove skill directory %s: %w", destPath, err)
+		hash, err = HashDirectory(dest)
+		if err != nil {
+			return err
 		}
 	}
-
-	m.GetState().DeleteRecord(targetID, skillName)
-	return m.SaveState()
+	canHash, err = HashDirectory(filepath.Join(m.CanonicalDir, skillName))
+	if err != nil {
+		return err
+	}
+	// Copies and TOML store content hashes. Symlinks leave the deployment hash empty.
+	m.state.SetRecord(target.ID, skillName, TargetRecord{
+		Mode:          mode,
+		Format:        target.Format,
+		Hash:          hash,
+		CanonicalHash: canHash,
+		Path:          dest,
+		Fallback:      fallback,
+		Device:        id.Dev,
+		Inode:         id.Ino,
+		IdentityValid: id.Valid,
+	})
+	if err := m.state.SaveTo(m.files(), m.StatePath); err != nil {
+		m.state.DeleteRecord(target.ID, skillName)
+		return err
+	}
+	return nil
 }
 
-// SyncReport summarizes the results of a synchronization operation.
+func (m *Manager) stageCopy(src string) (string, error) {
+	root := filepath.Join(m.ConfigDir, "staging")
+	if err := m.files().MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	staging := filepath.Join(root, filepath.Base(src)+"-"+randHex(4))
+	if err := copyTree(m.files(), src, src, staging); err != nil {
+		_ = m.files().RemoveTree(staging, FileID{})
+		return "", err
+	}
+	return staging, nil
+}
+
+func (m *Manager) publishNew(staging, dest string) error {
+	if err := hermeticGuard(dest); err != nil {
+		_ = m.files().RemoveTree(staging, FileID{})
+		return err
+	}
+	err := m.files().RenameExclusive(staging, dest)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, syscall.EXDEV) {
+		_ = m.files().RemoveTree(staging, FileID{})
+		return err
+	}
+	if err := copyTree(m.files(), staging, staging, dest); err != nil {
+		if id, idErr := m.files().Identity(dest); idErr == nil {
+			_ = m.files().RemoveTree(dest, id)
+		}
+		_ = m.files().RemoveTree(staging, FileID{})
+		return err
+	}
+	_ = m.files().RemoveTree(staging, FileID{})
+	return nil
+}
+
+func (m *Manager) replaceTree(target Target, skillName, src, dest string, rec TargetRecord) error {
+	id, _, err := authorizeDelete(m.files(), dest, rec)
+	if err != nil {
+		return err
+	}
+	if _, err := m.backupLocked(target.ID, skillName, dest); err != nil {
+		return err
+	}
+	staging, err := m.stageCopy(src)
+	if err != nil {
+		return err
+	}
+	hold := filepath.Join(filepath.Dir(dest), ".hold-"+randHex(4))
+	if err := m.files().Rename(dest, hold); err != nil {
+		_ = m.files().RemoveTree(staging, FileID{})
+		return err
+	}
+	if err := m.publishNew(staging, dest); err != nil {
+		_ = m.files().Rename(hold, dest)
+		return err
+	}
+	if err := m.files().RemoveTree(hold, id); err != nil {
+		newID, _ := m.files().Identity(dest)
+		_ = m.files().RemoveTree(dest, newID)
+		_ = m.files().Rename(hold, dest)
+		return fmt.Errorf("%w: destination changed during replace", ErrConflict)
+	}
+	return nil
+}
+
+func authorizeDelete(fsys fileSystem, dest string, rec TargetRecord) (FileID, string, error) {
+	info, err := fsys.Lstat(dest)
+	if err != nil {
+		return FileID{}, "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return FileID{}, "", fmt.Errorf("%w: %s is a symlink", ErrConflict, dest)
+	}
+	id, err := fsys.Identity(dest)
+	if err != nil {
+		return FileID{}, "", err
+	}
+	hash, err := HashDirectory(dest)
+	if err != nil {
+		return FileID{}, "", err
+	}
+	if rec.IdentityValid {
+		if !id.same(recordID(rec)) {
+			return FileID{}, "", fmt.Errorf("%w: file identity changed at %s", ErrConflict, dest)
+		}
+		return id, hash, nil
+	}
+	if rec.Hash != "" && rec.Hash == hash {
+		return id, hash, nil
+	}
+	return FileID{}, "", fmt.Errorf("%w: refusing to delete %s without a matching identity", ErrConflict, dest)
+}
+
+// Disable removes a deployment this tool created.
+// Symlinks are removed only when they point at the canonical skill.
+// Copies and TOML files are removed only when state identity matches.
+func (m *Manager) Disable(ctx context.Context, skillName, targetID string) error {
+	return m.mutate(ctx, func() error {
+		return m.disableLocked(skillName, targetID)
+	})
+}
+
+func (m *Manager) disableLocked(skillName, targetID string) error {
+	target, ok := m.targetByID(targetID)
+	if !ok {
+		return fmt.Errorf("%w: target %q", ErrNotFound, targetID)
+	}
+	canonical, err := skillDir(m.CanonicalDir, skillName)
+	if err != nil {
+		return err
+	}
+	dest, err := GetTargetDestinationPath(target, skillName)
+	if err != nil {
+		return err
+	}
+	info, err := m.files().Lstat(dest)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if m.dryRun {
+				return nil
+			}
+			m.state.DeleteRecord(targetID, skillName)
+			return m.state.SaveTo(m.files(), m.StatePath)
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		raw, rerr := m.files().Readlink(dest)
+		if rerr != nil {
+			return fmt.Errorf("%w: cannot read symlink %s: %v", ErrConflict, dest, rerr)
+		}
+		if !linksTo(dest, raw, canonical) {
+			return fmt.Errorf("%w: collision at %s: symlink points to %s", ErrConflict, dest, resolveLink(dest, raw))
+		}
+		if m.dryRun {
+			return nil
+		}
+		if err := m.files().Remove(dest); err != nil {
+			return err
+		}
+		m.state.DeleteRecord(targetID, skillName)
+		return m.state.SaveTo(m.files(), m.StatePath)
+	}
+	rec, tracked := m.state.GetRecord(targetID, skillName)
+	if !tracked {
+		return fmt.Errorf("%w: collision at %s: not managed by Skills Manager", ErrConflict, dest)
+	}
+	if _, _, err := authorizeDelete(m.files(), dest, rec); err != nil {
+		return err
+	}
+	if m.dryRun {
+		return nil
+	}
+	if _, err := m.backupLocked(targetID, skillName, dest); err != nil {
+		return err
+	}
+	id := recordID(rec)
+	if !id.Valid {
+		id, _ = m.files().Identity(dest)
+	}
+	if err := m.files().RemoveTree(dest, id); err != nil {
+		return err
+	}
+	m.state.DeleteRecord(targetID, skillName)
+	return m.state.SaveTo(m.files(), m.StatePath)
+}
+
+// SyncReport is the result of Sync.
 type SyncReport struct {
-	Updated []string
-	Skipped []string
-	Errors  []string
+	SchemaVersion int      `json:"schema_version"`
+	DryRun        bool     `json:"dry_run"`
+	Updated       []string `json:"updated"`
+	Conflicts     []string `json:"conflicts"`
+	Skipped       []string `json:"skipped"`
+	Errors        []string `json:"errors"`
 }
 
-// Sync synchronizes all active / drifted targets with canonical store.
-func (m *Manager) Sync() (*SyncReport, error) {
+// Sync updates deployments where only the canonical skill changed.
+// Edits on the target, and edits on both sides, are reported as conflicts
+// and left untouched.
+func (m *Manager) Sync(ctx context.Context) (*SyncReport, error) {
+	var report *SyncReport
+	err := m.mutate(ctx, func() error {
+		var err error
+		report, err = m.syncLocked(ctx)
+		return err
+	})
+	return report, err
+}
+
+func (m *Manager) syncLocked(ctx context.Context) (*SyncReport, error) {
+	report := &SyncReport{
+		SchemaVersion: JSONSchemaVersion,
+		DryRun:        m.dryRun,
+		Updated:       []string{},
+		Conflicts:     []string{},
+		Skipped:       []string{},
+		Errors:        []string{},
+	}
 	skills, err := ListSkills(m.CanonicalDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list canonical skills: %w", err)
+		return nil, err
 	}
-
-	targets := m.GetTargets()
-	report := &SyncReport{}
-
 	for _, skill := range skills {
-		for _, target := range targets {
-			status, err := m.Status(skill.Name, target.ID)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		for _, target := range m.targets {
+			st, err := m.statusLocked(skill.Name, target.ID)
 			if err != nil {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s / %s: %v", skill.Name, target.Label, err))
+				report.Errors = append(report.Errors, fmt.Sprintf("%s / %s: %v", skill.Name, target.ID, err))
 				continue
 			}
-
-			switch status.Code {
-			case StatusDrifted:
-				// Re-enable to update copy or TOML
-				res, err := m.Enable(skill.Name, target.ID)
+			switch st.Code {
+			case StatusDrifted, StatusBroken:
+				res, err := m.enableLocked(ctx, skill.Name, target.ID)
 				if err != nil {
-					report.Errors = append(report.Errors, fmt.Sprintf("%s / %s: %v", skill.Name, target.Label, err))
-				} else {
-					report.Updated = append(report.Updated, fmt.Sprintf("%s -> %s (%s)", skill.Name, target.Label, res.Message))
+					report.Errors = append(report.Errors, fmt.Sprintf("%s / %s: %v", skill.Name, target.ID, err))
+					continue
 				}
-
-			case StatusBroken:
-				// Repair broken symlink if canonical exists
-				_, err := m.Enable(skill.Name, target.ID)
-				if err != nil {
-					report.Errors = append(report.Errors, fmt.Sprintf("Repair %s / %s: %v", skill.Name, target.Label, err))
-				} else {
-					report.Updated = append(report.Updated, fmt.Sprintf("Repaired %s -> %s", skill.Name, target.Label))
-				}
-
+				report.Updated = append(report.Updated, fmt.Sprintf("%s -> %s (%s)", skill.Name, target.Label, res.Message))
 			case StatusConflict:
-				report.Skipped = append(report.Skipped, fmt.Sprintf("%s / %s: %s", skill.Name, target.Label, status.Message))
-
-			case StatusEnabled, StatusDisabled:
-				// No action needed
+				line := fmt.Sprintf("%s / %s: %s", skill.Name, target.Label, st.Message)
+				report.Conflicts = append(report.Conflicts, line)
+				report.Skipped = append(report.Skipped, line)
 			}
 		}
 	}
-
 	return report, nil
 }
+
+// JSONSchemaVersion is the version of CLI JSON documents.
+const JSONSchemaVersion = 1
